@@ -30,7 +30,10 @@ export interface ConversationCorrelation {
 }
 
 export function parseConversationCorrelation(raw: string): ConversationCorrelation {
-  const root = parseRoot(raw);
+  return correlationFromRoot(parseRoot(raw));
+}
+
+function correlationFromRoot(root: Record<string, unknown> | null): ConversationCorrelation {
   const messages = Array.isArray(root?.messages) ? root.messages : [];
   const firstMessage = asRecord(messages[0]);
   return {
@@ -41,7 +44,15 @@ export function parseConversationCorrelation(raw: string): ConversationCorrelati
 }
 
 export function parseConversationRequest(raw: string): RouteFields {
+  return fieldsFromRoot(parseRoot(raw));
+}
+
+export function parseConversationCapture(raw: string): { fields: RouteFields; correlation: ConversationCorrelation } {
   const root = parseRoot(raw);
+  return { fields: fieldsFromRoot(root), correlation: correlationFromRoot(root) };
+}
+
+function fieldsFromRoot(root: Record<string, unknown> | null): RouteFields {
   if (!root) return { ...EMPTY_ROUTE_FIELDS };
   const mode = asRecord(root.conversation_mode);
   const messages = Array.isArray(root.messages) ? root.messages : [];

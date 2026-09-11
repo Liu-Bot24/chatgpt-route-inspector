@@ -26,7 +26,14 @@ describe('extension permissions', () => {
   it('uses one minimal manifest with no browser debugging permission', () => {
     const value = manifest();
     expect(value.manifest_version).toBe(3);
-    expect(value.version).toBe('1.0.5');
+    const packageJson = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string };
+    const lock = JSON.parse(readFileSync(new URL('../../package-lock.json', import.meta.url), 'utf8')) as {
+      version: string; packages: { '': { version: string } };
+    };
+    expect(value.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(value.version).toBe(packageJson.version);
+    expect(lock.version).toBe(packageJson.version);
+    expect(lock.packages[''].version).toBe(packageJson.version);
     expect(value.permissions).toEqual(['storage']);
     expect(value.permissions).not.toContain('activeTab');
     expect(value.permissions).not.toContain('debugger');

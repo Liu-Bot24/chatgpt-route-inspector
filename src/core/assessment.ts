@@ -31,6 +31,20 @@ export function assessRoute(fields: RouteFields): RouteAssessment {
 
   const explicitRouteConflict = routeModels.length > 1;
   const explicitRouteModel = explicitRouteConflict ? null : routeModels[0] ?? null;
+  // A dedicated display category for these exact routes, not a general exemption for auto models.
+  // Keep conflicting server fields and every other route on the existing assessment path.
+  const autoRouteModel = presentRoutes.length > 0 ? explicitRouteModel : modelLabel;
+  if (autoRouteModel === 'gpt-5-6-auto-thinking' || autoRouteModel === 'gpt-5-5-auto-thinking') {
+    return {
+      verdict: 'auto_reasoning',
+      routeModel: autoRouteModel,
+      routeModelSources: presentRoutes.length > 0 ? explicitRouteSources : modelLabelSources,
+      modelLabel,
+      modelLabelSources,
+      modelLabelConflict,
+      reasons: [...reasons, `响应路由为 ${autoRouteModel}，标记为自动推理`]
+    };
+  }
   const routeLabelConflict = Boolean(explicitRouteModel && presentLabels.some((candidate) => candidate.model !== explicitRouteModel));
   if (explicitRouteConflict || routeLabelConflict) {
     const routeModelSources: ResponseModelSource[] = [

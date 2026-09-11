@@ -43,9 +43,11 @@ ChatGPT Route Inspector 是一款适用于 Chromium 浏览器的 ChatGPT 模型�
 ## 功能
 
 - **实时请求检测**：发送新消息后，显示本轮请求模型与响应路由。
+- **自动推理标记**：响应路由为 `gpt-5-6-auto-thinking` 或 `gpt-5-5-auto-thinking` 时，单独显示“自动推理”，并保留原始模型字段。
 - **会话重载检测**：刷新已有会话，读取已完成回答中可用的响应路由信息。
 - **页面浮窗**：在 ChatGPT 页面直接查看结果，支持完整、极简、迷你、边缘收纳和隐藏状态。
 - **路由诊断台**：查看本机记录、证据信息，并导出 Markdown 或 JSON 报告。
+- **额度快照**：在诊断台查看捕获时收到的深度研究、图片生成剩余额度及重置时间（北京时间）。只读取页面已有响应，不主动查询；未捕获的数据不补算，旧记录不会被新额度覆盖。
 - **PoW 难度显示**：显示原始十六进制难度值及其十进制换算结果。
 - **中英文界面**：Popup、浮窗、诊断台、设置和报告均支持中文与英文。
 - **本地优先**：检测记录保存在当前浏览器，不上传到第三方服务器。
@@ -58,7 +60,7 @@ ChatGPT Route Inspector 是一款适用于 Chromium 浏览器的 ChatGPT 模型�
 
 ### 手动安装发布包
 
-1. 下载并解压 [`chatgpt-route-inspector-1.0.5.zip`](https://github.com/Liu-Bot24/chatgpt-route-inspector/releases/download/v1.0.5/chatgpt-route-inspector-1.0.5.zip)。
+1. 从[最新 Release](https://github.com/Liu-Bot24/chatgpt-route-inspector/releases/latest) 下载并解压 `chatgpt-route-inspector-版本号.zip`。
 2. 打开 `chrome://extensions/`。
 3. 开启右上角的“开发者模式”。
 4. 点击“加载已解压的扩展程序”。

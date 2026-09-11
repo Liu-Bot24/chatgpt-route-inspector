@@ -1,4 +1,4 @@
-export type EndpointKind = 'conversation_stream' | 'conversation_record' | 'pow_requirements' | 'other';
+export type EndpointKind = 'conversation_stream' | 'conversation_record' | 'conversation_init' | 'pow_requirements' | 'other';
 
 const POW_REQUIREMENTS_PATHS = new Set([
   '/backend-api/sentinel/chat-requirements/prepare',
@@ -22,18 +22,23 @@ export function classifyEndpoint(input: string, base = 'https://chatgpt.com/'): 
     return { kind: 'other', conversationId: null };
   }
 
-  if (/^\/backend-api\/f\/conversations?$/.test(url.pathname)) {
+  if (url.pathname === '/backend-api/conversation' || /^\/backend-api\/f\/conversations?$/.test(url.pathname)) {
     return { kind: 'conversation_stream', conversationId: null };
   }
 
   const pathname = url.pathname.length > 1 ? url.pathname.replace(/\/$/, '') : url.pathname;
+  if (pathname === '/backend-api/conversation/init') return { kind: 'conversation_init', conversationId: null };
   if (POW_REQUIREMENTS_PATHS.has(pathname)) {
     return { kind: 'pow_requirements', conversationId: null };
   }
 
   const match = /^\/backend-api\/conversations?\/([^/]+)$/.exec(url.pathname);
   if (match?.[1]) {
-    return { kind: 'conversation_record', conversationId: decodeURIComponent(match[1]) };
+    try {
+      return { kind: 'conversation_record', conversationId: decodeURIComponent(match[1]) };
+    } catch {
+      return { kind: 'other', conversationId: null };
+    }
   }
 
   return { kind: 'other', conversationId: null };

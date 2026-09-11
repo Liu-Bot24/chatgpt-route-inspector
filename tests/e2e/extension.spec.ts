@@ -87,14 +87,38 @@ async function findExtensionCapableChromium(): Promise<string> {
 }
 
 test.beforeAll(async () => {
-  const [requestBody, responseBody, conversationMessages, frame] = await Promise.all([
+  const [requestBody, responseBody, conversationMessages, frame, deltaBody] = await Promise.all([
     readFile(path.join(root, 'tests', 'fixtures', 'conversation-request.json'), 'utf8'),
     readFile(path.join(root, 'tests', 'fixtures', 'handoff-response.sse'), 'utf8'),
     readFile(path.join(root, 'tests', 'fixtures', 'conversation-messages.json'), 'utf8'),
-    readFile(path.join(root, 'tests', 'fixtures', 'websocket-route-frame.json'), 'utf8')
+    readFile(path.join(root, 'tests', 'fixtures', 'websocket-route-frame.json'), 'utf8'),
+    readFile(path.join(root, 'tests', 'fixtures', 'delta-response.sse'), 'utf8')
   ]);
   webSocketFrame = frame;
   server = createServer((request, response) => {
+    if (request.method === 'POST' && request.url?.startsWith('/backend-api/f/conversation?delta=')) {
+      const variant = new URL(request.url, 'http://127.0.0.1:43996').searchParams.get('delta') ?? 'normal';
+      let body = deltaBody.replaceAll('conv-delta', `conv-${variant}`).replaceAll('req-delta', `req-${variant}`);
+      if (variant === 'missing-resolved') body = body.replace(',"resolved_model_slug":"gpt-6-pro"', '');
+      if (variant === 'conflict') body = body.replace('"resolved_model_slug":"gpt-6-pro"', '"resolved_model_slug":"gpt-5-5-mini"');
+      if (variant === 'unsupported') body = body.replace('data: "v1"', 'data: "v2"');
+      response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store' });
+      let offset = 0;
+      const writeChunk = () => {
+        if (response.destroyed) return;
+        if (offset >= body.length) { response.end(); return; }
+        response.write(body.slice(offset, offset + 31));
+        offset += 31;
+        setTimeout(writeChunk, 2);
+      };
+      writeChunk();
+      return;
+    }
+    if (request.url === '/delta-fixture') {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end('<!doctype html><html><body><h1>Delta response fixture</h1></body></html>');
+      return;
+    }
     if (request.method === 'POST' && request.url === '/backend-api/sentinel/chat-requirements/prepare') {
       response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       response.end(JSON.stringify({
@@ -774,6 +798,12 @@ test('keeps live and reload captures distinct and stores no chat text', async ()
       ? `${spaTurn.routeModel}:${spaTurn.modelLabel}:${spaTurn.sources?.join('+')}`
       : 'missing';
   }, storageKey)).toBe('gpt-5-5-instant:gpt-5-5-instant:assistant_dom');
+  expect(await worker.evaluate(async (key) => {
+    const state = (await chrome.storage.local.get(key))[key] as {
+      turns: Array<{ conversationId: string; modelLabel: string }>;
+    };
+    return state.turns.filter((turn) => turn.conversationId === 'spa-conversation-b').map((turn) => turn.modelLabel);
+  }, storageKey)).toEqual(['gpt-5-5-instant']);
   overlayText = await overlay.evaluate((element) => element.shadowRoot?.textContent ?? '');
   expect(overlayText).toContain('已读取响应路由');
   expect(overlayText).toContain('gpt-5-5-instant');
@@ -1000,4 +1030,425 @@ test('restores a detached overlay host while respecting manual hide', async () =
   await expect(overlay).toHaveCount(1);
   await runLiveFixture();
   await expect(overlay).toHaveCount(1);
+});
+
+test('captures delta metadata through real fetch chunks and interleaved WebSocket frames', async () => {
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/ui/popup/index.html`);
+  await popup.locator('#mode-live').click();
+  await popup.locator('#overlay-show').click();
+  const page = await context.newPage();
+  const frames: string[] = [];
+  await page.routeWebSocket('ws://127.0.0.1:43996/delta-ws', (socket) => {
+    let index = 0;
+    socket.onMessage(() => { if (index < frames.length) socket.send(frames[index++]!); });
+  });
+  await page.goto('http://127.0.0.1:43996/delta-fixture');
+
+  for (const variant of ['normal', 'missing-resolved', 'conflict']) {
+    await page.evaluate(async (variant) => {
+      const response = await window.fetch(`/backend-api/f/conversation?delta=${variant}`, {
+        method: 'POST', body: JSON.stringify({ model: 'gpt-6-pro', conversation_id: `conv-${variant}` })
+      });
+      await response.text();
+    }, variant);
+    await expect.poll(() => worker.evaluate(async ({ key, variant }) => {
+      const current = (await chrome.storage.local.get(key))[key] as {
+        turns: Array<{ requestId: string; phase: string; responseModelSlug: string; resolvedModelSlug: string | null; serverModelSlug: string; verdict: string }>;
+      };
+      const turn = current.turns.find((item) => item.requestId === `req-${variant}`);
+      return turn && {
+        phase: turn.phase, label: turn.responseModelSlug, resolved: turn.resolvedModelSlug,
+        server: turn.serverModelSlug, verdict: turn.verdict
+      };
+    }, { key: storageKey, variant })).toEqual({
+      phase: 'completed', label: 'gpt-6-pro', server: 'gpt-6-pro',
+      resolved: variant === 'missing-resolved' ? null : variant === 'conflict' ? 'gpt-5-5-mini' : 'gpt-6-pro',
+      verdict: variant === 'conflict' ? 'conflict' : 'normal'
+    });
+  }
+  await expect(page.locator('#chatgpt-route-inspector-root')).toContainText('gpt-6-pro');
+  await expect(page.locator('#chatgpt-route-inspector-root')).toContainText('assistant.metadata.model_slug');
+
+  const unsupportedResponse = await page.evaluate(async () => {
+    const response = await window.fetch('/backend-api/f/conversation?delta=unsupported', {
+      method: 'POST', body: JSON.stringify({ model: 'gpt-6-pro', conversation_id: 'conv-unsupported' })
+    });
+    return response.text();
+  });
+  expect(unsupportedResponse).toContain('[DONE]');
+  await expect.poll(() => worker.evaluate(async (key) => {
+    const current = (await chrome.storage.local.get(key))[key] as {
+      turns: Array<{ conversationId: string; phase: string; errorCode: string }>;
+    };
+    const turn = current.turns.find((item) => item.conversationId === 'conv-unsupported');
+    return turn && { phase: turn.phase, error: turn.errorCode };
+  }, storageKey)).toEqual({ phase: 'failed', error: 'stream_parse_failed' });
+
+  const encode = (topic: string, value: unknown) => JSON.stringify([{
+    topic_id: topic, payload: { payload: { encoded_item: `event: delta\ndata: ${JSON.stringify(value)}\n\n` } }
+  }]);
+  // Subscription and answer use the same topic. The old generic fixture subscribed
+  // to topic-private-123456 but sent ws-assistant, relying on missing topic checks.
+  await page.route('**/backend-api/conversation', (route) => route.fulfill({
+    contentType: 'text/event-stream',
+    body: 'data: {"conversation_id":"conv-ws-delta"}\n\n' +
+      'data: {"type":"subscribe_ws_topic","topic":"ws-assistant"}\n\n'
+  }));
+  frames.push(
+    encode('wrong-topic', { p: '', o: 'add', v: {
+      conversation_id: 'conv-ws-delta', parent_id: 'input-ws-delta', resolved_model_slug: 'wrong-topic-model'
+    } }),
+    encode('ws-assistant', { p: '', o: 'add', v: {
+      message: { author: { role: 'assistant' }, metadata: {} }
+    } }),
+    encode('ws-user', { p: '', o: 'add', v: {
+      message: { id: 'unrelated-user', author: { role: 'user' }, metadata: {} }, conversation_id: 'unrelated-conv'
+    } }),
+    encode('ws-user', { p: '/message/metadata/model_slug', o: 'add', v: 'untrusted-user-label' }),
+    JSON.stringify([{ topic_id: 'ws-assistant', payload: { payload: { encoded_item:
+      'data: {"type":"server_ste_metadata","metadata":{"model_slug":"gpt-6-pro","request_id":"req-ws-delta"}}\n\n'
+    } } }]),
+    encode('ws-assistant', { p: '', o: 'patch', v: [
+      { p: '/message/metadata', o: 'append', v: { model_slug: 'gpt-6-pro', resolved_model_slug: 'gpt-6-pro', request_id: 'req-ws-delta' } },
+      { p: '/message/content', o: 'add', v: { parts: ['SECRET_DELTA_WS_ANSWER'] } }
+    ] }),
+    JSON.stringify([{ topic_id: 'ws-assistant', payload: { payload: { encoded_item: 'data: [DONE]\n\n' } } }])
+  );
+  await page.evaluate(async (frameCount) => {
+    await window.fetch('/backend-api/conversation', {
+      method: 'POST', body: JSON.stringify({ model: 'gpt-6-pro', conversation_id: null, messages: [{ id: 'input-ws-delta', author: { role: 'user' } }] })
+    }).then((response) => response.text());
+    await new Promise<void>((resolve, reject) => {
+      const socket = new WebSocket('ws://127.0.0.1:43996/delta-ws');
+      let count = 0;
+      socket.addEventListener('open', () => socket.send('next'));
+      socket.addEventListener('error', reject);
+      socket.addEventListener('message', () => {
+        if (++count === frameCount) { socket.close(); resolve(); }
+        else socket.send('next');
+      });
+    });
+  }, frames.length);
+  await expect.poll(() => worker.evaluate(async (key) => {
+    const current = (await chrome.storage.local.get(key))[key] as {
+      turns: Array<{ requestId: string; responseModelSlug: string; resolvedModelSlug: string; conversationId: string; phase: string; verdict: string; sources: string[] }>;
+    };
+    const turn = current.turns.find((item) => item.requestId === 'req-ws-delta');
+    return turn && { label: turn.responseModelSlug, resolved: turn.resolvedModelSlug, conversation: turn.conversationId,
+      phase: turn.phase, verdict: turn.verdict, sources: turn.sources };
+  }, storageKey)).toEqual({ label: 'gpt-6-pro', resolved: 'gpt-6-pro', conversation: 'conv-ws-delta',
+    phase: 'completed', verdict: 'normal', sources: ['page_fetch', 'page_websocket'] });
+  const stored = await worker.evaluate(async (key) => JSON.stringify((await chrome.storage.local.get(key))[key]), storageKey);
+  expect(stored).not.toMatch(/SECRET_DELTA|untrusted-user-label|wrong-topic-model|ws-assistant/);
+  await page.close();
+  await popup.close();
+});
+
+test('aligns diagnostic evidence fields without adding PoW', async () => {
+  const dashboard = await context.newPage();
+  await dashboard.setViewportSize({ width: 1600, height: 1100 });
+  await dashboard.goto(`chrome-extension://${extensionId}/ui/dashboard/index.html`);
+  await dashboard.evaluate(async () => {
+    await chrome.runtime.sendMessage({ type: 'route:update-settings', settings: { uiLanguage: 'zh' } });
+    await chrome.runtime.sendMessage({ type: 'route:clear' });
+  });
+  const evidence = (name: string) => dashboard.locator('#detail .evidence').filter({ has: dashboard.locator('small', { hasText: name }) }).locator('code');
+  for (const [phase, label] of [['requested', '已发起请求'], ['responding', '响应中'], ['completed', '已完成'], ['failed', '捕获失败']] as const) {
+    await dashboard.evaluate(async (phase) => {
+      const time = new Date(Date.now() + 1000).toISOString();
+      await chrome.runtime.sendMessage({ type: 'route:clear' });
+      await chrome.runtime.sendMessage({ type: 'route:observation', observation: {
+        captureId: `detail-${phase}`, source: 'page_fetch', captureMode: 'live', phase, observedAt: time, startedAt: time,
+        requestedModel: 'gpt-test', ...(phase === 'failed' ? { errorCode: 'http_403' } : {})
+      } });
+    }, phase);
+    await expect(evidence('捕获状态')).toHaveText(label);
+    await expect(evidence('请求模型')).toHaveText('gpt-test');
+    await expect(evidence('深度研究剩余额度')).toHaveText('未捕获');
+    await expect(evidence('图片生成重置时间')).toHaveText('未捕获');
+    await expect(dashboard.locator('#detail .evidence-note')).toHaveCount(0);
+    if (phase === 'failed') await expect(evidence('错误码')).toHaveText('http_403');
+    else await expect(evidence('错误码')).toHaveCount(0);
+  }
+  await dashboard.evaluate(async () => {
+    const time = new Date(Date.now() + 1000).toISOString();
+    await chrome.runtime.sendMessage({ type: 'route:clear' });
+    await chrome.runtime.sendMessage({ type: 'route:observation', observation: {
+      captureId: 'detail-conflict', source: 'page_fetch', captureMode: 'live', phase: 'completed', observedAt: time, startedAt: time,
+      requestedModel: 'gpt-pro', resolvedModelSlug: 'gpt-pro', serverModelSlug: 'gpt-mini',
+      responseModelSlug: 'gpt-pro', domModelSlug: 'gpt-pro', planType: 'pro', thinkingEffort: 'max', fastConvo: true,
+      requestId: 'detail-request'
+    } });
+  });
+  await expect(evidence('响应路由')).toHaveText('路由字段冲突');
+  await expect(dashboard.locator('#detail .evidence small')).toHaveText([
+    '捕获模式', '捕获状态',
+    '请求模型', '响应路由', '响应来源', '解析模型', '服务端模型', '回答模型标签', '回答标签来源',
+    '页面模型标签', '思考强度', '快速会话', '套餐类型',
+    '深度研究剩余额度', '深度研究重置时间', '图片生成剩余额度', '图片生成重置时间', '请求 ID', '耗时', '捕获来源'
+  ]);
+  await expect(evidence('回答标签来源')).toHaveText('assistant.metadata.model_slug');
+  await expect(evidence('请求模型')).toHaveText('gpt-pro');
+  const referenceNote = dashboard.locator('#detail .evidence-note');
+  await expect(referenceNote).toHaveText('*');
+  await expect(dashboard.locator('#detail')).not.toContainText('仅供参考');
+  expect(await referenceNote.evaluate((element) => getComputedStyle(element).borderTopWidth)).toBe('0px');
+  await referenceNote.hover();
+  await expect(referenceNote).toHaveAttribute('title', /assistant\.metadata\.model_slug\n回答元数据中的模型标签，不保证与实际执行模型一致/);
+  await referenceNote.locator('..').locator('..').screenshot({ path: path.join(root, 'output', 'playwright', 'dashboard-label-asterisk.png') });
+  await expect(evidence('套餐类型')).toHaveText('pro');
+  await expect(evidence('思考强度')).toHaveText('max');
+  await expect(evidence('快速会话')).toHaveText('true');
+  await expect(dashboard.locator('#detail small').filter({ hasText: /^模型标签$/ })).toHaveCount(0);
+  const fieldLabels = [
+    ['resolved_model_slug', '解析模型', 'Resolved model'],
+    ['server_ste_metadata.model_slug', '服务端模型', 'Server model'],
+    ['assistant.metadata.model_slug', '回答模型标签', 'Assistant model label'],
+    ['assistant[data-message-model-slug]', '页面模型标签', 'Page model label']
+  ] as const;
+  for (const [field, chinese] of fieldLabels) {
+    const label = dashboard.locator('#detail .evidence small').filter({ hasText: chinese });
+    await expect(label).toHaveText(chinese);
+    await label.hover();
+    if (field === 'assistant.metadata.model_slug') await expect(label).toHaveAttribute('title', await referenceNote.getAttribute('title') ?? '');
+    else await expect(label).toHaveAttribute('title', field);
+  }
+  await expect(dashboard.locator('#detail')).not.toContainText(/PoW|工具名称/i);
+  await dashboard.screenshot({ path: path.join(root, 'output', 'playwright', 'dashboard-evidence-aligned-zh.png'), fullPage: true });
+  await dashboard.locator('#detail').screenshot({ path: path.join(root, 'output', 'playwright', 'dashboard-evidence-reference-zh.png') });
+  await dashboard.evaluate(async () => chrome.runtime.sendMessage({ type: 'route:update-settings', settings: { uiLanguage: 'en' } }));
+  await expect(evidence('Capture status')).toHaveText('Completed');
+  await expect(evidence('Response route')).toHaveText('Route conflict');
+  await expect(evidence('Assistant label source')).toHaveText('assistant.metadata.model_slug');
+  await expect(evidence('Requested model')).toHaveText('gpt-pro');
+  await expect(referenceNote).toHaveText('*');
+  await expect(dashboard.locator('#detail')).not.toContainText('Reference only');
+  await expect(referenceNote).toHaveAttribute('title', /does not guarantee the model that actually executed/);
+  await expect(dashboard.locator('#detail small').filter({ hasText: /^Model label$/ })).toHaveCount(0);
+  for (const [field, , english] of fieldLabels) {
+    const label = dashboard.locator('#detail .evidence small').filter({ hasText: english });
+    await expect(label).toHaveText(english);
+    if (field !== 'assistant.metadata.model_slug') await expect(label).toHaveAttribute('title', field);
+  }
+  await expect(dashboard.locator('#detail')).not.toContainText(/[\u4e00-\u9fff]/);
+  expect(await dashboard.locator('#detail .evidence small').evaluateAll((labels) => labels.every((label) =>
+    label.scrollWidth <= label.clientWidth + 1 && getComputedStyle(label).textTransform === 'none'
+  ))).toBe(true);
+  expect(await dashboard.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await dashboard.screenshot({ path: path.join(root, 'output', 'playwright', 'dashboard-evidence-aligned-en.png'), fullPage: true });
+  await dashboard.close();
+});
+
+test('shows only GPT-5.6 and GPT-5.5 auto reasoning in the dashboard, popup and overlay', async () => {
+  const dashboard = await context.newPage();
+  await dashboard.setViewportSize({ width: 1600, height: 1150 });
+  await dashboard.goto(`chrome-extension://${extensionId}/ui/dashboard/index.html`);
+  await dashboard.evaluate(async () => {
+    await chrome.runtime.sendMessage({ type: 'route:update-settings', settings: {
+      uiLanguage: 'zh', captureMode: 'live', autoCaptureEnabled: true, overlayEnabled: true, overlayMode: 'full'
+    } });
+    await chrome.runtime.sendMessage({ type: 'route:clear' });
+  });
+  const samples = [
+    { id: 'auto-55', requested: 'gpt-5-5', route: 'gpt-5-5-auto-thinking', label: 'gpt-5-5-thinking', verdict: 'auto_reasoning' },
+    { id: 'auto-54', requested: 'gpt-5-6', route: 'gpt-5-4-auto-thinking', label: null, verdict: 'mismatch' },
+    { id: 'auto-54-conflict', requested: 'gpt-5-6', route: 'gpt-5-4-auto-thinking', label: 'gpt-5-6-thinking', verdict: 'conflict' },
+    { id: 'normal', requested: 'gpt-5-6-thinking', route: 'gpt-5-6-thinking', label: 'gpt-5-6-thinking', verdict: 'normal' },
+    { id: 'auto-56', requested: 'gpt-5-6', route: 'gpt-5-6-auto-thinking', label: 'gpt-5-6-thinking', verdict: 'auto_reasoning' }
+  ];
+  const page = await context.newPage();
+  await page.route('**/backend-api/f/conversation?auto-case=*', (route) => {
+    const id = new URL(route.request().url()).searchParams.get('auto-case');
+    const sample = samples.find((item) => item.id === id)!;
+    const body = [
+      { conversation_id: `preview-${id}`, message: { author: { role: 'assistant' }, metadata: { model_slug: sample.label } } },
+      { type: 'server_ste_metadata', metadata: { model_slug: sample.route, resolved_model_slug: sample.route, request_id: `preview-${id}`, plan_type: 'plus', fast_convo: true } }
+    ].map((item) => `data: ${JSON.stringify(item)}\n\n`).join('') + 'data: [DONE]\n\n';
+    return route.fulfill({ contentType: 'text/event-stream', body });
+  });
+  await page.goto('http://127.0.0.1:43996/delta-fixture');
+  const overlay = page.locator('#chatgpt-route-inspector-root');
+  await expect(overlay).toHaveCount(1);
+  for (const sample of samples) {
+    await page.evaluate(async (sample) => {
+      await window.fetch(`/backend-api/f/conversation?auto-case=${sample.id}`, {
+        method: 'POST', body: JSON.stringify({ model: sample.requested, conversation_id: `preview-${sample.id}` })
+      }).then((response) => response.text());
+    }, sample);
+    await expect.poll(() => worker.evaluate(async ({ key, id }) => {
+      const state = (await chrome.storage.local.get(key))[key];
+      return state.turns.find((turn: { requestId: string }) => turn.requestId === `preview-${id}`)?.verdict;
+    }, { key: storageKey, id: sample.id })).toBe(sample.verdict);
+  }
+  await expect(overlay.locator('.status')).toHaveText('自动推理');
+  expect(await overlay.locator('.status').evaluate((item) => getComputedStyle(item).color)).toBe('rgb(117, 197, 216)');
+  await overlay.locator('.probe').screenshot({ path: path.join(root, 'output', 'playwright', 'auto-reasoning-overlay-zh.png') });
+  const tabId = await worker.evaluate(async () => (await chrome.tabs.query({})).find((tab) => tab.url?.endsWith('/delta-fixture'))!.id!);
+  await expect.poll(() => worker.evaluate((tabId) => chrome.action.getBadgeText({ tabId }), tabId)).toBe('AUTO');
+
+  await expect(dashboard.locator('#rows tr')).toHaveCount(5);
+  await dashboard.locator('[data-filter="auto_reasoning"]').click();
+  await expect(dashboard.locator('#rows tr')).toHaveCount(2);
+  await dashboard.locator('#rows tr').first().click();
+  await expect(dashboard.locator('#detail-tag')).toHaveText('自动推理');
+  await expect(dashboard.locator('#detail-tag')).toHaveClass('tag auto');
+  await expect(dashboard.locator('#detail')).toContainText('gpt-5-6-auto-thinking');
+  await expect(dashboard.locator('#detail')).toContainText('gpt-5-6-thinking');
+  await dashboard.screenshot({ path: path.join(root, 'output', 'playwright', 'auto-reasoning-dashboard-zh.png'), fullPage: true });
+  await dashboard.locator('aside .panel').first().screenshot({ path: path.join(root, 'output', 'playwright', 'auto-reasoning-detail-zh.png') });
+
+  const popup = await context.newPage();
+  await popup.setViewportSize({ width: 640, height: 600 });
+  await popup.goto(`chrome-extension://${extensionId}/ui/popup/index.html`);
+  await page.bringToFront();
+  await popup.reload();
+  await expect(popup.locator('.verdict-line b')).toHaveText('自动推理');
+  await expectPopupFits(popup);
+  await popup.screenshot({ path: path.join(root, 'output', 'playwright', 'auto-reasoning-popup-zh.png') });
+  await dashboard.evaluate(async () => chrome.runtime.sendMessage({ type: 'route:update-settings', settings: { uiLanguage: 'en' } }));
+  await expect(dashboard.locator('#detail-tag')).toHaveText('Auto reasoning');
+  await expect(popup.locator('.verdict-line b')).toHaveText('Auto reasoning');
+  await expect(overlay.locator('.status')).toHaveText('Auto reasoning');
+  const downloadPromise = dashboard.waitForEvent('download');
+  await dashboard.locator('#export-json').click();
+  const download = await downloadPromise;
+  const exported = JSON.parse(await readFile((await download.path())!, 'utf8'));
+  expect(exported.turns.filter((turn: { verdict: string }) => turn.verdict === 'auto_reasoning')).toHaveLength(2);
+  expect(exported.turns.find((turn: { resolvedModelSlug: string }) => turn.resolvedModelSlug === 'gpt-5-6-auto-thinking')).toMatchObject({
+    responseModelSlug: 'gpt-5-6-thinking', requestedModel: 'gpt-5-6', serverModelSlug: 'gpt-5-6-auto-thinking'
+  });
+  await Promise.all([page.close(), popup.close(), dashboard.close()]);
+});
+
+test('captures passive quota snapshots and displays four rows immediately above request ID', async () => {
+  const dashboard = await context.newPage();
+  await dashboard.setViewportSize({ width: 1600, height: 1250 });
+  await dashboard.goto(`chrome-extension://${extensionId}/ui/dashboard/index.html`);
+  await dashboard.evaluate(async () => {
+    await chrome.runtime.sendMessage({ type: 'route:update-settings', settings: { captureMode: 'live', autoCaptureEnabled: true, overlayEnabled: true, uiLanguage: 'zh' } });
+    await chrome.runtime.sendMessage({ type: 'route:clear' });
+  });
+  const page = await context.newPage();
+  let imageRemaining = 987;
+  const quotaRequests: string[] = [];
+  page.on('request', (request) => { if (request.url().includes('/backend-api/conversation/init')) quotaRequests.push(request.url()); });
+  await page.route('**/backend-api/conversation/init', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+    type: 'conversation_detail_metadata', limits_progress: [
+      { feature_name: 'deep_research', remaining: 0, reset_after: '2026-10-11T12:37:00Z' },
+      { feature_name: 'image_gen', remaining: imageRemaining, reset_after: '2026-09-12T12:37:00Z', token: 'SECRET_QUOTA_TOKEN' }
+    ]
+  }) }));
+  await page.goto('http://127.0.0.1:43996/delta-fixture');
+  await expect(page.locator('#chatgpt-route-inspector-root')).toHaveCount(1);
+  const capture = async (variant: string) => page.evaluate(async (variant) => {
+    await window.fetch('/backend-api/conversation/init', { method: 'POST', body: '{}' }).then((response) => response.json());
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await window.fetch(`/backend-api/f/conversation?delta=${variant}`, {
+      method: 'POST', body: JSON.stringify({ model: 'gpt-6-pro', conversation_id: `conv-${variant}` })
+    }).then((response) => response.text());
+  }, variant);
+  await capture('normal');
+  const evidence = (name: string) => dashboard.locator('#detail .evidence').filter({ has: dashboard.locator('small', { hasText: name }) }).locator('code');
+  await expect(evidence('深度研究剩余额度')).toHaveText('0');
+  await expect(evidence('图片生成剩余额度')).toHaveText('987');
+  await expect(evidence('深度研究重置时间')).toHaveText('2026/10/11 20:37 （北京时间）');
+  await expect(evidence('图片生成重置时间')).toHaveText('2026/09/12 20:37 （北京时间）');
+  const labels = await dashboard.locator('#detail .evidence small').allTextContents();
+  expect(labels.slice(labels.indexOf('请求 ID') - 4, labels.indexOf('请求 ID'))).toEqual([
+    '深度研究剩余额度', '深度研究重置时间', '图片生成剩余额度', '图片生成重置时间'
+  ]);
+  await expect(dashboard.locator('#detail small').filter({ hasText: '图片生成剩余额度' })).toHaveAttribute('title', /limits_progress\[feature_name=image_gen\]\.remaining/);
+  const firstId = await dashboard.locator('#rows tr').first().getAttribute('data-id');
+  await dashboard.locator('#detail').screenshot({ path: path.join(root, 'output', 'playwright', 'dashboard-usage-quota-zh.png') });
+  imageRemaining = 986;
+  await capture('missing-resolved');
+  await expect(dashboard.locator('#rows tr')).toHaveCount(2);
+  await dashboard.locator('#rows tr').first().click();
+  await expect(evidence('图片生成剩余额度')).toHaveText('986');
+  await dashboard.locator(`#rows tr[data-id="${firstId}"]`).click();
+  await expect(evidence('图片生成剩余额度')).toHaveText('987');
+  expect(quotaRequests).toHaveLength(2);
+  const stored = await worker.evaluate(async (key) => JSON.stringify((await chrome.storage.local.get(key))[key]), storageKey);
+  expect(stored).not.toContain('SECRET_QUOTA_TOKEN');
+  await dashboard.evaluate(async () => chrome.runtime.sendMessage({ type: 'route:update-settings', settings: { uiLanguage: 'en' } }));
+  await expect(evidence('Deep research remaining')).toHaveText('0');
+  await expect(evidence('Image generation reset time')).toHaveText('12/09/2026, 20:37 (UTC+08:00)');
+  await expect(dashboard.locator('#detail')).not.toContainText(/[\u4e00-\u9fff]/);
+  await page.close();
+  await dashboard.close();
+});
+
+test('rejects stale UI snapshots, keeps overlay nodes stable, and blocks post-clear resurrection', async () => {
+  const options = await context.newPage();
+  await options.goto(`chrome-extension://${extensionId}/ui/options/index.html`);
+  await options.evaluate(async () => {
+    await chrome.runtime.sendMessage({ type: 'route:update-settings', settings: {
+      captureMode: 'live', uiLanguage: 'en', overlayEnabled: true, overlayMode: 'full', autoCaptureEnabled: true
+    } });
+    await chrome.runtime.sendMessage({ type: 'route:clear' });
+  });
+  const page = await context.newPage();
+  await page.goto('http://127.0.0.1:43996/c/audit-regression');
+  const overlay = page.locator('#chatgpt-route-inspector-root');
+  await expect(overlay).toHaveCount(1);
+  const startedAt = new Date().toISOString();
+  const observation = {
+    captureId: 'audit-stable-capture', source: 'page_fetch', captureMode: 'live', phase: 'completed',
+    observedAt: startedAt, startedAt, requestedModel: 'gpt-audit', resolvedModelSlug: 'gpt-audit', conversationId: 'audit-regression'
+  };
+  await page.evaluate((observation) => window.postMessage({ source: 'chatgpt-route-inspector', version: 1, observation }, location.origin), observation);
+  await expect(overlay).toContainText('gpt-audit');
+  const dashboard = await context.newPage();
+  await dashboard.goto(`chrome-extension://${extensionId}/ui/dashboard/index.html`);
+  await expect(dashboard.locator('#rows tr')).toHaveCount(1);
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/ui/popup/index.html`);
+  await expect(popup.locator('#overlay-show')).toHaveClass(/active/);
+
+  // A metadata timestamp refresh must not rebuild identical visible overlay controls.
+  await overlay.evaluate((element) => {
+    const root = element.shadowRoot!;
+    (element as HTMLElement & { auditButton?: Element }).auditButton = root.querySelector('#mini')!;
+  });
+  await page.evaluate((observation) => window.postMessage({ source: 'chatgpt-route-inspector', version: 1,
+    observation: { ...observation, observedAt: new Date().toISOString() }
+  }, location.origin), observation);
+  const staleSnapshot = await options.evaluate(async () => (await chrome.runtime.sendMessage({ type: 'route:get-state' })).state);
+  const tabId = await worker.evaluate(async () => (await chrome.tabs.query({})).find((tab) => tab.url?.endsWith('/c/audit-regression'))!.id!);
+  await worker.evaluate(async ({ tabId, snapshot }) => {
+    snapshot.revision -= 1;
+    snapshot.settings.overlayEnabled = false;
+    snapshot.settings.uiLanguage = 'zh';
+    snapshot.turns = [];
+    await chrome.tabs.sendMessage(tabId, { type: 'route:state-changed', state: snapshot });
+    await chrome.runtime.sendMessage({ type: 'route:state-changed', state: snapshot }).catch(() => undefined);
+  }, { tabId, snapshot: staleSnapshot });
+  await expect(overlay).toHaveCount(1);
+  expect(await overlay.evaluate((element) => (element as HTMLElement & { auditButton?: Element }).auditButton === element.shadowRoot?.querySelector('#mini'))).toBe(true);
+  await expect(popup.locator('#overlay-show')).toHaveClass(/active/);
+  await expect(dashboard.locator('#rows tr')).toHaveCount(1);
+  await expect(options.locator('html')).toHaveAttribute('lang', 'en');
+
+  const cleared = await options.evaluate(async () => (await chrome.runtime.sendMessage({ type: 'route:clear' })).state);
+  await page.evaluate((observation) => window.postMessage({ source: 'chatgpt-route-inspector', version: 1,
+    observation: { ...observation, observedAt: new Date().toISOString() }
+  }, location.origin), observation);
+  await expect.poll(() => worker.evaluate(async (key) => (await chrome.storage.local.get(key))[key].turns.length, storageKey)).toBe(0);
+  await expect(dashboard.locator('#rows tr')).toHaveCount(0);
+  await expect.poll(() => worker.evaluate((tabId) => chrome.action.getBadgeText({ tabId }), tabId)).toBe('');
+  const rejected = await options.evaluate(async () => (await chrome.runtime.sendMessage({ type: 'route:get-state' })).state);
+  expect(rejected.revision).toBe(cleared.revision);
+
+  // A failed save reports failure without a success toast or an unhandled promise rejection.
+  const errors: string[] = [];
+  options.on('pageerror', (error) => errors.push(error.message));
+  await options.evaluate(() => {
+    chrome.runtime.sendMessage = (async () => ({ ok: false, error: 'Simulated storage failure' })) as typeof chrome.runtime.sendMessage;
+  });
+  await options.locator('#save').click();
+  await expect(options.getByRole('alert')).toHaveText('Simulated storage failure');
+  await expect(options.locator('#toast')).not.toHaveClass(/show/);
+  expect(errors).toEqual([]);
+  await Promise.all([options.close(), popup.close(), dashboard.close(), page.close()]);
 });

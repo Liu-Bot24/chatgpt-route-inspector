@@ -1,4 +1,5 @@
 import { buildMarkdownReport } from '../../core/privacy';
+import { isStaleState } from '../../core/state';
 import type { CaptureMode, InspectorState, UiLanguage } from '../../core/types';
 import {
   captureModeLabel,
@@ -62,6 +63,7 @@ function showFeedback(key: TranslationKey, tone = 'signal'): void {
 }
 
 function render(next: InspectorState): void {
+  if (isStaleState(state, next)) return;
   state = next;
   const language = state.settings.uiLanguage;
   const mode = state.settings.captureMode;
@@ -107,11 +109,13 @@ function render(next: InspectorState): void {
 async function setLanguage(uiLanguage: UiLanguage): Promise<void> {
   if (state?.settings.uiLanguage === uiLanguage) return;
   const response = await send({ type: 'route:update-settings', settings: { uiLanguage } });
+  if (!response.ok) return;
   if (response.state) render(response.state);
 }
 
 async function setMode(mode: CaptureMode): Promise<void> {
   const response = await send({ type: 'route:update-settings', settings: { captureMode: mode } });
+  if (!response.ok) return;
   if (response.state) render(response.state);
   showFeedback(mode === 'live' ? 'status.switchedLive' : 'status.switchedReload');
 }
@@ -123,6 +127,7 @@ async function setOverlayEnabled(overlayEnabled: boolean): Promise<void> {
       ? { overlayEnabled: true, overlayMode: 'full', overlayMinimized: false }
       : { overlayEnabled: false }
   });
+  if (!response.ok) return;
   if (response.state) render(response.state);
   showFeedback(overlayEnabled ? 'status.overlayShown' : 'status.overlayHidden');
 }
@@ -147,6 +152,6 @@ document.querySelector('#copy')?.addEventListener('click', async () => {
 void (async () => {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tabs[0]?.id;
-  render(await getState());
   subscribe(render);
+  render(await getState());
 })();

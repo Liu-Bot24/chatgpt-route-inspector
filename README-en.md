@@ -43,9 +43,11 @@ The following example shows a request for `GPT 5.6 Pro` with a response route of
 ## Features
 
 - **Live request inspection**: shows the requested model and response route for a newly sent message.
+- **Auto reasoning indicator**: separately labels response routes `gpt-5-6-auto-thinking` and `gpt-5-5-auto-thinking` as “Auto reasoning”, while preserving the original model fields.
 - **Conversation reload inspection**: reloads an existing conversation and reads available response-route information from completed answers.
 - **Page overlay**: displays results inside ChatGPT with full, compact, mini, edge-stowed, and hidden states.
 - **Route diagnostics**: reviews locally stored records and evidence, with Markdown and JSON export.
+- **Quota snapshots**: shows captured deep research and image generation balances and reset times (UTC+08:00) in diagnostics. Reads existing page responses without additional quota requests; missing values are not inferred, and new balances do not overwrite older records.
 - **PoW difficulty display**: shows the original hexadecimal value and its decimal conversion.
 - **Chinese and English UI**: supports both languages across the Popup, overlay, diagnostics, settings, and reports.
 - **Local-first storage**: keeps inspection records in the current browser and does not upload them to third-party servers.
@@ -58,7 +60,7 @@ The following example shows a request for `GPT 5.6 Pro` with a response route of
 
 ### Install a release package manually
 
-1. Download and extract [`chatgpt-route-inspector-1.0.5.zip`](https://github.com/Liu-Bot24/chatgpt-route-inspector/releases/download/v1.0.5/chatgpt-route-inspector-1.0.5.zip).
+1. Download and extract `chatgpt-route-inspector-VERSION.zip` from the [latest release](https://github.com/Liu-Bot24/chatgpt-route-inspector/releases/latest).
 2. Open `chrome://extensions/`.
 3. Enable **Developer mode**.
 4. Click **Load unpacked**.

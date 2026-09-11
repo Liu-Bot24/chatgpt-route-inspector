@@ -1,5 +1,6 @@
 import type { CaptureMode, InspectorState, RouteTurn, UiLanguage } from '../core/types';
 import { conversationIdFromPathname } from '../core/chatgpt-path';
+import { isStaleState } from '../core/state';
 import { isPageBridgeEnvelope, type RuntimeRequest, type RuntimeResponse } from '../shared/messages';
 import { AUTHOR_LINK, AUTHOR_TEXT } from '../ui/shared/branding';
 import { t } from '../ui/shared/i18n';
@@ -14,16 +15,57 @@ let reloadScanEnabledForDocument = false;
 const documentStartedAtMs = Date.now();
 const DOM_FALLBACK_DELAY_MS = 1200;
 const seenDomRoutes = new Set<string>();
+let domPathname = location.pathname;
+const nodeIdentities = new WeakMap<HTMLElement, { pathname: string; messageId: string | null }>();
+const domSelector = '[data-message-author-role="assistant"][data-message-model-slug]';
+let renderedSignature = '';
+
+function trackDomNodes(): HTMLElement[] {
+  if (domPathname !== location.pathname) {
+    domPathname = location.pathname;
+    seenDomRoutes.clear();
+  }
+  const nodes = [...document.querySelectorAll<HTMLElement>(domSelector)];
+  for (const node of nodes) {
+    const identity = nodeIdentities.get(node);
+    const messageId = node.getAttribute('data-message-id');
+    if (!identity || (messageId !== null && messageId !== identity.messageId)) {
+      nodeIdentities.set(node, { pathname: domPathname, messageId });
+    }
+  }
+  return nodes;
+}
+
+function publishCaptureControl(): void {
+  if (!state) return;
+  window.postMessage({
+    source: 'chatgpt-route-inspector-control', version: 1,
+    revision: state.revision ?? 0,
+    autoCaptureEnabled: state.settings.autoCaptureEnabled,
+    captureMode: state.settings.captureMode,
+    clearedAt: state.clearedAt ?? null
+  }, location.origin);
+}
+
+function acceptState(next: InspectorState): boolean {
+  if (isStaleState(state, next)) return false;
+  if (!state) reloadScanEnabledForDocument = next.settings.captureMode === 'reload';
+  else if (state.settings.captureMode !== next.settings.captureMode) reloadScanEnabledForDocument = false;
+  if (state?.clearedAt !== next.clearedAt) {
+    seenDomRoutes.clear();
+    if (next.clearedAt) reloadScanEnabledForDocument = false;
+  }
+  state = next;
+  publishCaptureControl();
+  render();
+  scheduleReloadDomScan();
+  return true;
+}
 
 const stateReady = chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({ type: 'route:get-state' })
   .then((response) => {
     ownTabId = response.tabId ?? null;
-    if (response.state) {
-      state = response.state;
-      reloadScanEnabledForDocument = state.settings.captureMode === 'reload';
-      render();
-      scheduleReloadDomScan();
-    }
+    if (response.ok && response.state) acceptState(response.state);
   })
   .catch(() => undefined);
 
@@ -98,12 +140,17 @@ async function scanReloadDom(): Promise<void> {
   if (hasCurrentDocumentConversationRecord()) return;
   scanRunning = true;
   try {
-    const nodes = [...document.querySelectorAll<HTMLElement>('[data-message-author-role="assistant"][data-message-model-slug]')];
+    const pathname = location.pathname;
+    const conversationId = conversationIdFromPath();
+    if (!conversationId) return;
+    const nodes = trackDomNodes();
     for (const [index, node] of nodes.entries()) {
+      if (location.pathname !== pathname || !reloadScanEnabledForDocument || !state?.settings.autoCaptureEnabled || state.settings.captureMode !== 'reload') break;
+      if (!node.isConnected || nodeIdentities.get(node)?.pathname !== pathname) continue;
       const model = node.getAttribute('data-message-model-slug')?.trim() ?? '';
       if (!model || model.length > 256) continue;
       const messageKey = node.getAttribute('data-message-id') ?? String(index);
-      const key = `${location.pathname}\u0000${messageKey}\u0000${model}`;
+      const key = `${pathname}\u0000${messageKey}\u0000${model}`;
       if (seenDomRoutes.has(key)) continue;
 
       const observedAt = new Date().toISOString();
@@ -118,13 +165,16 @@ async function scanReloadDom(): Promise<void> {
             observedAt,
             startedAt: observedAt,
             completedAt: observedAt,
-            pageUrl: `${location.origin}${location.pathname}`,
-            conversationId: conversationIdFromPath(),
+            pageUrl: `${location.origin}${pathname}`,
+            conversationId,
             domModelSlug: model
           }
         });
-        seenDomRoutes.add(key);
-        if (response.state) state = response.state;
+        if (response.ok) {
+          if (seenDomRoutes.size >= 1000) seenDomRoutes.delete(seenDomRoutes.values().next().value!);
+          seenDomRoutes.add(key);
+          if (response.state) acceptState(response.state);
+        }
       } catch {
         // A transient extension reload leaves the node eligible for a later scan.
       }
@@ -149,17 +199,18 @@ async function updateSettings(settings: Partial<InspectorState['settings']>): Pr
     type: 'route:update-settings',
     settings
   });
-  if (response.state) {
-    state = response.state;
-    render();
-    scheduleReloadDomScan();
+  if (!response.ok) {
+    window.alert(response.error ?? 'Unable to update extension settings.');
+    return;
   }
+  if (response.state) acceptState(response.state);
 }
 
 function render(): void {
   if (!state?.settings.overlayEnabled) {
     host?.remove();
     host = null;
+    renderedSignature = '';
     return;
   }
   if (!host?.isConnected) {
@@ -167,6 +218,7 @@ function render(): void {
     host.id = 'chatgpt-route-inspector-root';
     document.documentElement.append(host);
     host.attachShadow({ mode: 'open' });
+    renderedSignature = '';
   }
   const root = host.shadowRoot;
   if (!root) return;
@@ -175,6 +227,11 @@ function render(): void {
   const overlayMode = state.settings.overlayMode ?? (state.settings.overlayMinimized ? 'compact' : 'full');
   const turn = currentTurn();
   const pow = currentPowReading();
+  const signature = JSON.stringify([language, mode, overlayMode,
+    turn && [turn.phase, turn.verdict, turn.requestedModel, turn.routeModel, turn.modelLabel, turn.modelLabelConflict,
+      turn.routeModelSources, turn.modelLabelSources, turn.sources], pow?.rawHex, pow?.decimal]);
+  if (signature === renderedSignature) return;
+  renderedSignature = signature;
   const copy = overlayVerdictCopy(turn, mode, language);
   const routeModel = turn?.verdict === 'conflict' ? t(language, 'result.routeConflict') : turn?.routeModel ?? (turn ? t(language, 'value.unavailable') : null);
   const hint = t(language, mode === 'live' ? 'overlay.liveHint' : 'overlay.reloadHint');
@@ -254,6 +311,9 @@ function render(): void {
       .mini-icon{width:6px;height:6px;border-radius:1px}
       .mini,.mini-docked{--mini-accent:#efb55d;--mini-accent-width:5px;--mini-edge-width:11px;right:0;bottom:76px;border-right:0;border-radius:4px 0 0 4px;box-shadow:calc(-1 * var(--mini-accent-width)) 0 var(--mini-accent),0 16px 36px rgba(0,0,0,.35)}
       .mini.normal,.mini-docked.normal{--mini-accent:#a9f04d}
+      .auto .status{color:#75c5d8}
+      .auto .route{border-color:rgba(117,197,216,.5);box-shadow:inset 3px 0 #75c5d8}
+      .mini.auto,.mini-docked.auto{--mini-accent:#75c5d8}
       .mini.danger,.mini-docked.danger{--mini-accent:#f07868}
       .mini{width:148px;max-width:calc(100vw - 8px)}
       .mini-hit{display:grid;width:100%;padding:0;border:0;background:#10130f;color:inherit;text-align:center;cursor:pointer;font:inherit}
@@ -289,6 +349,11 @@ function render(): void {
 }
 
 window.addEventListener('message', (event: MessageEvent<unknown>) => {
+  if (event.source === window && event.origin === location.origin &&
+    (event.data as { source?: string } | null)?.source === 'chatgpt-route-inspector-control-request') {
+    publishCaptureControl();
+    return;
+  }
   if (event.source !== window || event.origin !== location.origin || !isPageBridgeEnvelope(event.data)) return;
   const envelope = event.data;
   void stateReady.then(async () => {
@@ -298,10 +363,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
         type: 'pow:observation',
         observation: envelope.pow
       });
-      if (response.state) {
-        state = response.state;
-        render();
-      }
+      if (response.ok && response.state) acceptState(response.state);
       return;
     }
     if (state?.settings.captureMode !== envelope.observation.captureMode) return;
@@ -309,11 +371,8 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       type: 'route:observation',
       observation: envelope.observation
     });
-    if (response.state) {
-      state = response.state;
-      render();
-    }
-  });
+    if (response.ok && response.state) acceptState(response.state);
+  }).catch(() => undefined);
 });
 
 chrome.runtime.onMessage.addListener((message: unknown) => {
@@ -321,23 +380,22 @@ chrome.runtime.onMessage.addListener((message: unknown) => {
   const record = message as Record<string, unknown>;
   if (record.type !== 'route:state-changed' || !record.state) return;
   const next = record.state as InspectorState;
-  if (state?.settings.captureMode !== next.settings.captureMode) reloadScanEnabledForDocument = false;
-  state = next;
-  render();
-  scheduleReloadDomScan();
+  acceptState(next);
 });
 
 const domObserver = new MutationObserver(() => {
+  if (reloadScanEnabledForDocument) trackDomNodes();
   if (state?.settings.overlayEnabled && !host?.isConnected) render();
   scheduleReloadDomScan();
 });
 function observeDocument(): void {
   if (!document.documentElement) return;
+  trackDomNodes();
   domObserver.observe(document.documentElement, {
     subtree: true,
     childList: true,
     attributes: true,
-    attributeFilter: ['data-message-model-slug']
+    attributeFilter: ['data-message-model-slug', 'data-message-id']
   });
   scheduleReloadDomScan();
 }

@@ -3,7 +3,28 @@ import type { RuntimeRequest, RuntimeResponse } from '../../shared/messages';
 import { t } from './i18n';
 
 export async function send(request: RuntimeRequest): Promise<RuntimeResponse> {
-  return chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>(request);
+  try {
+    const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>(request);
+    if (!response.ok) throw new Error(response.error ?? 'The extension could not complete this action.');
+    document.getElementById('route-operation-error')?.remove();
+    return response;
+  } catch (error) {
+    showOperationError(error);
+    return { ok: false, error: error instanceof Error ? error.message : 'The extension could not complete this action.' };
+  }
+}
+
+export function showOperationError(error: unknown): void {
+  const message = error instanceof Error ? error.message : 'The extension could not complete this action.';
+  let element = document.getElementById('route-operation-error');
+  if (!element) {
+    element = document.createElement('div');
+    element.id = 'route-operation-error';
+    element.setAttribute('role', 'alert');
+    element.style.cssText = 'position:fixed;bottom:8px;left:8px;right:8px;z-index:2147483647;padding:12px;background:#471f1a;color:#fff;white-space:pre-wrap';
+    document.body.append(element);
+  }
+  element.textContent = message;
 }
 
 export async function getState(): Promise<InspectorState> {
@@ -33,11 +54,13 @@ export function verdictLabel(verdict: RouteVerdict, language: UiLanguage): strin
     normal: t(language, 'result.normal'),
     mismatch: t(language, 'result.mismatch'),
     conflict: t(language, 'result.routeConflict'),
+    auto_reasoning: t(language, 'result.autoReasoning'),
     unknown: t(language, 'result.unknown')
   }[verdict];
 }
 
 export function verdictTone(verdict: RouteVerdict): string {
+  if (verdict === 'auto_reasoning') return 'auto';
   if (verdict === 'normal') return 'signal';
   if (verdict === 'mismatch' || verdict === 'conflict') return 'danger';
   return 'amber';
@@ -101,6 +124,10 @@ export function assessmentReasons(turn: RouteTurn, language: UiLanguage): string
   }
 
   if (turn.modelLabelConflict) reasons.push(t(language, 'reason.labelConflict'));
+  if (turn.verdict === 'auto_reasoning') {
+    reasons.push(t(language, 'reason.autoReasoning', { model: turn.routeModel ?? '' }));
+    return reasons;
+  }
   if (turn.routeModel && turn.modelLabel && turn.routeModel !== turn.modelLabel) {
     reasons.push(t(language, 'reason.labelRouteMismatch', { label: turn.modelLabel, route: turn.routeModel }));
   }

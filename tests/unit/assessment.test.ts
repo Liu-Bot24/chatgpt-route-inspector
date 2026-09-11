@@ -3,6 +3,56 @@ import { assessRoute } from '../../src/core/assessment';
 import { EMPTY_ROUTE_FIELDS } from '../../src/core/types';
 
 describe('assessRoute', () => {
+  it.each(['gpt-5-6-auto-thinking', 'gpt-5-5-auto-thinking'])('classifies %s separately from normal and conflict', (model) => {
+    const result = assessRoute({
+      ...EMPTY_ROUTE_FIELDS,
+      requestedModel: 'gpt-5-6',
+      resolvedModelSlug: model,
+      serverModelSlug: model,
+      responseModelSlug: 'gpt-5-6-thinking'
+    });
+    expect(result).toMatchObject({
+      verdict: 'auto_reasoning', routeModel: model,
+      routeModelSources: ['resolved_model_slug', 'server_ste_metadata.model_slug'],
+      modelLabel: 'gpt-5-6-thinking'
+    });
+  });
+
+  it.each(['resolvedModelSlug', 'serverModelSlug', 'responseModelSlug', 'domModelSlug'] as const)(
+    'recognizes GPT-5.6 auto-thinking in %s when it supplies the response route', (field) => {
+      expect(assessRoute({ ...EMPTY_ROUTE_FIELDS, [field]: ' GPT-5-6-AUTO-THINKING ' })).toMatchObject({
+        verdict: 'auto_reasoning', routeModel: 'gpt-5-6-auto-thinking'
+      });
+    }
+  );
+
+  it('does not infer auto reasoning from a request, default model or unused label', () => {
+    expect(assessRoute({ ...EMPTY_ROUTE_FIELDS, requestedModel: 'auto', resolvedModelSlug: 'gpt-5-6' }).verdict).toBe('mismatch');
+    expect(assessRoute({ ...EMPTY_ROUTE_FIELDS, defaultModelSlug: 'auto' }).verdict).toBe('unknown');
+    expect(assessRoute({
+      ...EMPTY_ROUTE_FIELDS, requestedModel: 'gpt-5-6', resolvedModelSlug: 'gpt-5-6', responseModelSlug: 'gpt-5-6-auto-thinking'
+    }).verdict).toBe('conflict');
+  });
+
+  it.each(['gpt-5-6-thinking', 'gpt-5-4-auto-thinking'])('keeps conflicting route evidence when the other field is %s', (other) => {
+    const result = assessRoute({
+      ...EMPTY_ROUTE_FIELDS, resolvedModelSlug: 'gpt-5-6-auto-thinking', serverModelSlug: other
+    });
+    expect(result).toMatchObject({
+      verdict: 'conflict', routeModel: null,
+      routeModelSources: ['resolved_model_slug', 'server_ste_metadata.model_slug']
+    });
+    expect(result.reasons.join('\n')).toContain('响应路由证据字段之间存在不一致');
+  });
+
+  it.each(['gpt-5-4-auto-thinking', 'gpt-5-6-mini-auto-thinking', 'gpt-5-5-mini-auto-thinking', 'gpt-5-6-auto', 'gpt-5-6-auto-thinking-extra'])(
+    'does not exempt %s from the existing request comparison or label conflict', (model) => {
+      const fields = { ...EMPTY_ROUTE_FIELDS, requestedModel: 'gpt-5-6-pro', resolvedModelSlug: model, serverModelSlug: model };
+      expect(assessRoute(fields).verdict).toBe('mismatch');
+      expect(assessRoute({ ...fields, responseModelSlug: 'gpt-5-6-pro' }).verdict).toBe('conflict');
+    }
+  );
+
   it('reports a mismatch when every explicit response route field resolves to mini', () => {
     const result = assessRoute({
       ...EMPTY_ROUTE_FIELDS,

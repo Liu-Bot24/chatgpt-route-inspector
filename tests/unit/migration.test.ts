@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { migrateStoredTurn } from '../../src/core/migration';
+import { ROUTE_SCHEMA_VERSION } from '../../src/core/types';
 
 const legacyBase = {
   schema: 'chatgpt-route-observation',
@@ -20,10 +21,22 @@ const legacyBase = {
 };
 
 describe('stored turn migration', () => {
+  it('reassesses an old auto-thinking conflict without changing its raw evidence', () => {
+    const turn = migrateStoredTurn({
+      ...legacyBase, sources: ['page_fetch'], schemaVersion: '1.5.0', verdict: 'conflict',
+      requestedModel: 'gpt-5-6', responseModelSlug: 'gpt-5-6-thinking',
+      resolvedModelSlug: 'gpt-5-6-auto-thinking', serverModelSlug: 'gpt-5-6-auto-thinking'
+    });
+    expect(turn).toMatchObject({
+      schemaVersion: ROUTE_SCHEMA_VERSION, verdict: 'auto_reasoning', routeModel: 'gpt-5-6-auto-thinking',
+      requestedModel: 'gpt-5-6', responseModelSlug: 'gpt-5-6-thinking',
+      resolvedModelSlug: 'gpt-5-6-auto-thinking', serverModelSlug: 'gpt-5-6-auto-thinking'
+    });
+  });
   it('migrates an old stream turn to deterministic live-mode fields', () => {
     const turn = migrateStoredTurn({ ...legacyBase, sources: ['page_fetch'] });
     expect(turn).toMatchObject({
-      schemaVersion: '1.4.0',
+      schemaVersion: ROUTE_SCHEMA_VERSION,
       captureMode: 'live',
       routeModel: 'gpt-5-5-mini',
       routeModelSources: ['resolved_model_slug'],
@@ -74,7 +87,7 @@ describe('stored turn migration', () => {
     expect(turn).toMatchObject({
       captureMode: 'live',
       sources: ['page_fetch', 'page_websocket'],
-      schemaVersion: '1.4.0'
+      schemaVersion: ROUTE_SCHEMA_VERSION
     });
   });
 

@@ -1,13 +1,13 @@
 import { classifyEndpoint } from '../core/endpoints';
 import { parsePowResponse } from '../core/pow';
+import { hasUsageQuota, normalizeUsageQuota, parseUsageQuota, quotaSignature } from '../core/usage-quota';
 import {
-  parseConversationCorrelation,
-  parseConversationRequest,
+  parseConversationCapture,
   type ConversationCorrelation
 } from '../core/request-parser';
-import { mergeRouteFields, parseResponseText } from '../core/response-parser';
-import type { PowObservation, RouteFields, RouteObservation } from '../core/types';
-import { parseWebSocketFrame, type WebSocketRouteEvidence } from '../core/websocket-parser';
+import { mergeRouteFields, parseResponseValue, ResponseStreamParser } from '../core/response-parser';
+import type { CaptureMode, PowObservation, RouteFields, RouteObservation, UsageQuotaFields } from '../core/types';
+import { WebSocketRouteParser, type WebSocketRouteEvidence } from '../core/websocket-parser';
 import type { PageBridgeEnvelope } from '../shared/messages';
 
 const nativeFetch = window.fetch;
@@ -15,9 +15,39 @@ const nativeWebSocket = window.WebSocket;
 const allowedOrigins = new Set(__ROUTE_INSPECTOR_ALLOWED_ORIGINS__);
 const MAX_CONVERSATION_RECORD_BYTES = 8 * 1024 * 1024;
 const MAX_POW_RESPONSE_BYTES = 256 * 1024;
-const MAX_STREAM_EVENT_BYTES = 1024 * 1024;
 const MAX_PENDING_CAPTURES = 32;
+const MAX_CAPTURE_TOPICS = 8;
 const PENDING_CAPTURE_TTL_MS = 10 * 60 * 1000;
+let captureEnabled = true;
+let captureMode: CaptureMode | null = null;
+let controlRevision = -1;
+let clearedAt = 0;
+let latestQuota: UsageQuotaFields | null = null;
+const inspectionReaders = new Set<ReadableStreamDefaultReader<Uint8Array>>();
+
+window.addEventListener('message', (event: MessageEvent<unknown>) => {
+  if (event.source !== window || event.origin !== location.origin || !event.data || typeof event.data !== 'object') return;
+  const data = event.data as Record<string, unknown>;
+  if (data.source !== 'chatgpt-route-inspector-control' || data.version !== 1 ||
+    typeof data.revision !== 'number' || data.revision < controlRevision ||
+    typeof data.autoCaptureEnabled !== 'boolean' || !['live', 'reload'].includes(String(data.captureMode))) return;
+  const nextClearedAt = typeof data.clearedAt === 'string' ? Date.parse(data.clearedAt) || 0 : 0;
+  if (!data.autoCaptureEnabled || (captureMode !== null && captureMode !== data.captureMode) || nextClearedAt > clearedAt) {
+    pendingLiveCaptures.clear();
+    latestQuota = null;
+    for (const reader of inspectionReaders) void reader.cancel().catch(() => undefined);
+  }
+  captureEnabled = data.autoCaptureEnabled;
+  captureMode = data.captureMode as CaptureMode;
+  controlRevision = data.revision;
+  clearedAt = Math.max(clearedAt, nextClearedAt);
+});
+window.postMessage({ source: 'chatgpt-route-inspector-control-request' }, location.origin);
+
+function canCapture(mode: CaptureMode | null, startedAt?: string): boolean {
+  return captureEnabled && (!mode || !captureMode || mode === captureMode) &&
+    (!startedAt || Date.parse(startedAt) > clearedAt);
+}
 
 function now(): string {
   return new Date().toISOString();
@@ -27,7 +57,14 @@ function safePageUrl(): string {
   return `${location.origin}${location.pathname}`;
 }
 
+function rememberQuota(fields: UsageQuotaFields, startedAt: string): UsageQuotaFields | null {
+  if (!hasUsageQuota(fields) || !canCapture(null, startedAt)) return null;
+  latestQuota = { ...normalizeUsageQuota(fields), quotaObservedAt: now() };
+  return latestQuota;
+}
+
 function emit(observation: RouteObservation): void {
+  if (!canCapture(observation.captureMode, observation.startedAt ?? observation.observedAt)) return;
   const envelope: PageBridgeEnvelope = {
     source: 'chatgpt-route-inspector',
     version: 1,
@@ -37,6 +74,7 @@ function emit(observation: RouteObservation): void {
 }
 
 function emitPow(pow: PowObservation): void {
+  if (!canCapture(null, pow.startedAt ?? pow.observedAt)) return;
   const envelope: PageBridgeEnvelope = {
     source: 'chatgpt-route-inspector',
     version: 1,
@@ -71,22 +109,16 @@ async function requestBody(input: RequestInfo | URL, init?: RequestInit): Promis
 }
 
 function fieldsSignature(fields: RouteFields): string {
-  return JSON.stringify([
-    fields.requestedModel,
-    fields.responseModelSlug,
-    fields.defaultModelSlug,
-    fields.resolvedModelSlug,
-    fields.serverModelSlug,
-    fields.requestId,
-    fields.toolInvoked,
-    fields.toolName
-  ]);
+  return JSON.stringify(fields);
 }
 
 interface PendingLiveCapture extends ConversationCorrelation {
   captureId: string;
   startedAt: string;
+  pageUrl: string;
   expiresAt: number;
+  httpActive: boolean;
+  topicIds: Set<string>;
   webSocketFields: RouteFields;
   lastWebSocketSignature: string;
 }
@@ -95,14 +127,16 @@ const pendingLiveCaptures = new Map<string, PendingLiveCapture>();
 
 function prunePendingCaptures(timestamp = Date.now()): void {
   for (const [captureId, pending] of pendingLiveCaptures) {
-    if (pending.expiresAt <= timestamp) pendingLiveCaptures.delete(captureId);
+    // An open HTTP response is still active, even while waiting for its first metadata.
+    if (!pending.httpActive && pending.expiresAt <= timestamp) pendingLiveCaptures.delete(captureId);
   }
 }
 
 function registerPendingCapture(
   captureId: string,
   startedAt: string,
-  correlation: ConversationCorrelation
+  correlation: ConversationCorrelation,
+  pageUrl: string
 ): void {
   prunePendingCaptures();
   if (!correlation.conversationId && !correlation.inputMessageId && !correlation.parentMessageId) return;
@@ -115,8 +149,11 @@ function registerPendingCapture(
   pendingLiveCaptures.set(captureId, {
     captureId,
     startedAt,
+    pageUrl,
     ...correlation,
     expiresAt: Date.now() + PENDING_CAPTURE_TTL_MS,
+    httpActive: true,
+    topicIds: new Set(),
     webSocketFields: emptyFields,
     lastWebSocketSignature: fieldsSignature(emptyFields)
   });
@@ -124,6 +161,14 @@ function registerPendingCapture(
 
 function uniqueCandidate(candidates: PendingLiveCapture[]): PendingLiveCapture | null {
   return candidates.length === 1 ? candidates[0] ?? null : null;
+}
+
+function boundedCorrelationId(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 && value.length <= 512 ? value : null;
+}
+
+function rememberTopic(pending: PendingLiveCapture, topicId: string | null): void {
+  if (topicId && pending.topicIds.size < MAX_CAPTURE_TOPICS) pending.topicIds.add(topicId);
 }
 
 function pendingCaptureFor(evidence: WebSocketRouteEvidence): PendingLiveCapture | null {
@@ -134,7 +179,10 @@ function pendingCaptureFor(evidence: WebSocketRouteEvidence): PendingLiveCapture
     (evidence.messageIds.includes(candidate.inputMessageId ?? '') ||
       evidence.parentIds.includes(candidate.inputMessageId ?? ''))
   );
-  if (inputMatches.length > 0) return uniqueCandidate(inputMatches);
+  const compatible = (candidate: PendingLiveCapture): boolean =>
+    (!candidate.conversationId || evidence.conversationIds.length === 0 ||
+      evidence.conversationIds.includes(candidate.conversationId)) &&
+    (!evidence.topicId || candidate.topicIds.size === 0 || candidate.topicIds.has(evidence.topicId));
 
   const parentMatches = pending.filter((candidate) =>
     Boolean(candidate.parentMessageId) &&
@@ -142,12 +190,22 @@ function pendingCaptureFor(evidence: WebSocketRouteEvidence): PendingLiveCapture
     (evidence.conversationIds.length === 0 ||
       !candidate.conversationId || evidence.conversationIds.includes(candidate.conversationId))
   );
-  if (parentMatches.length > 0) return uniqueCandidate(parentMatches);
+
+  const topicMatches = pending.filter((candidate) => Boolean(evidence.topicId && candidate.topicIds.has(evidence.topicId)));
+  if (topicMatches.length > 0) {
+    const match = uniqueCandidate(topicMatches);
+    // A topic must not override contradictory request/message identity.
+    const identityMatches = inputMatches.length > 0 ? inputMatches : parentMatches;
+    return match && compatible(match) && (identityMatches.length === 0 || identityMatches.includes(match)) ? match : null;
+  }
+  if (inputMatches.length > 0) return uniqueCandidate(inputMatches.filter(compatible));
+
+  if (parentMatches.length > 0) return uniqueCandidate(parentMatches.filter(compatible));
 
   const conversationMatches = pending.filter((candidate) =>
     Boolean(candidate.conversationId) && evidence.conversationIds.includes(candidate.conversationId ?? '')
   );
-  return uniqueCandidate(conversationMatches);
+  return uniqueCandidate(conversationMatches.filter(compatible));
 }
 
 function hasWebSocketMetadata(fields: RouteFields): boolean {
@@ -156,17 +214,30 @@ function hasWebSocketMetadata(fields: RouteFields): boolean {
     fields.resolvedModelSlug ||
     fields.serverModelSlug ||
     fields.requestId ||
-    fields.planType
+    fields.planType || hasUsageQuota(fields)
   );
 }
 
-function handleWebSocketText(raw: string): void {
-  const evidenceItems = parseWebSocketFrame(raw);
-  const updates = new Map<string, { pending: PendingLiveCapture; fields: RouteFields; terminal: boolean }>();
+function handleWebSocketText(raw: string, parser: WebSocketRouteParser): void {
+  if (!canCapture('live') || pendingLiveCaptures.size === 0) { parser.clear(); return; }
+  const evidenceItems = parser.parse(raw);
+  const updates = new Map<string, { pending: PendingLiveCapture; fields: RouteFields; terminal: boolean; streamEnded: boolean }>();
 
   for (const evidence of evidenceItems) {
     const pending = pendingCaptureFor(evidence);
     if (!pending) continue;
+    // Expire idle handoffs, not long-running answers; progress without model fields counts.
+    pending.expiresAt = Date.now() + PENDING_CAPTURE_TTL_MS;
+    rememberTopic(pending, evidence.topicId);
+    if (evidence.errorCode) {
+      emit({
+        captureId: pending.captureId, source: 'page_websocket', captureMode: 'live', phase: 'failed',
+        observedAt: now(), startedAt: pending.startedAt, pageUrl: pending.pageUrl, errorCode: evidence.errorCode
+      });
+      updates.delete(pending.captureId);
+      pendingLiveCaptures.delete(pending.captureId);
+      continue;
+    }
     if (!pending.conversationId && evidence.conversationIds.length === 1) {
       pending.conversationId = evidence.conversationIds[0] ?? null;
     }
@@ -174,11 +245,15 @@ function handleWebSocketText(raw: string): void {
     updates.set(pending.captureId, {
       pending,
       fields: mergeRouteFields(current?.fields ?? pending.webSocketFields, evidence.fields),
-      terminal: Boolean(current?.terminal || evidence.terminal)
+      terminal: Boolean(current?.terminal || evidence.terminal),
+      streamEnded: Boolean(current?.streamEnded || evidence.streamEnded)
     });
   }
 
-  for (const { pending, fields, terminal } of updates.values()) {
+  for (const { pending, fields, terminal, streamEnded } of updates.values()) {
+    if (hasUsageQuota(fields) && quotaSignature(fields) !== quotaSignature(pending.webSocketFields)) {
+      Object.assign(fields, rememberQuota(fields, pending.startedAt));
+    }
     pending.webSocketFields = mergeRouteFields(fields, { conversationId: pending.conversationId });
     const signature = fieldsSignature(pending.webSocketFields);
     const shouldEmit = hasWebSocketMetadata(pending.webSocketFields) &&
@@ -193,13 +268,13 @@ function handleWebSocketText(raw: string): void {
         phase: terminal ? 'completed' : 'responding',
         observedAt,
         startedAt: pending.startedAt,
-        pageUrl: safePageUrl(),
+        pageUrl: pending.pageUrl,
         ...pending.webSocketFields
       };
       if (terminal) observation.completedAt = observedAt;
       emit(observation);
     }
-    if (terminal) pendingLiveCaptures.delete(pending.captureId);
+    if (streamEnded) pendingLiveCaptures.delete(pending.captureId);
   }
 }
 
@@ -207,31 +282,42 @@ async function parseSseStream(
   response: Response,
   captureId: string,
   startedAt: string,
-  baseFields: RouteFields
+  baseFields: RouteFields,
+  pageUrl: string
 ): Promise<void> {
   const body = response.body;
   if (!body) throw new Error('stream_body_missing');
   const reader = body.getReader();
+  inspectionReaders.add(reader);
   const decoder = new TextDecoder();
-  let buffer = '';
+  let handedOff = false;
+  const parser = new ResponseStreamParser((event) => {
+    const value = event.value as { type?: string; topic_id?: unknown; topic?: unknown } | null;
+    if (value?.type === 'stream_handoff' || value?.type === 'subscribe_ws_topic') {
+      handedOff = true;
+      const pending = pendingLiveCaptures.get(captureId);
+      if (pending) rememberTopic(pending, boundedCorrelationId(value.topic_id) ?? boundedCorrelationId(value.topic));
+    }
+  });
   let fields = baseFields;
+  let streamQuota: UsageQuotaFields | null = null;
+  const mergeStreamFields = (parsed: RouteFields): RouteFields => {
+    const pending = pendingLiveCaptures.get(captureId);
+    if (pending) {
+      pending.expiresAt = Date.now() + PENDING_CAPTURE_TTL_MS;
+      if (!pending.conversationId) pending.conversationId = boundedCorrelationId(parsed.conversationId);
+    }
+    if (hasUsageQuota(parsed) && (!streamQuota || quotaSignature(parsed) !== quotaSignature(streamQuota))) {
+      streamQuota = rememberQuota(parsed, startedAt);
+    }
+    return mergeRouteFields(baseFields, parsed, streamQuota ?? {});
+  };
   let lastSignature = fieldsSignature(fields);
 
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
-    if (buffer.length > MAX_STREAM_EVENT_BYTES && !buffer.includes('\n')) {
-      await reader.cancel('route metadata event exceeded safety limit');
-      throw new Error('stream_event_too_large');
-    }
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() ?? '';
-    for (const line of lines) {
-      if (line.length > MAX_STREAM_EVENT_BYTES) throw new Error('stream_event_too_large');
-      if (!line.startsWith('data:')) continue;
-      const parsed = parseResponseText(line)[0];
-      if (!parsed) continue;
-      fields = mergeRouteFields(fields, parsed);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      fields = mergeStreamFields(parser.push(decoder.decode(value, { stream: !done })));
       const signature = fieldsSignature(fields);
       if (signature !== lastSignature) {
         lastSignature = signature;
@@ -242,96 +328,101 @@ async function parseSseStream(
           phase: 'responding',
           observedAt: now(),
           startedAt,
-          pageUrl: safePageUrl(),
+          pageUrl,
           ...fields
         });
       }
+      if (done) break;
     }
-    if (done) break;
-  }
-
-  if (buffer.startsWith('data:')) {
-    const parsed = parseResponseText(buffer)[0];
-    if (parsed) fields = mergeRouteFields(fields, parsed);
+    fields = mergeStreamFields(parser.finish());
+  } finally {
+    // Cancel only the inspection branch of the cloned response; never block ChatGPT's reader.
+    void reader.cancel().catch(() => undefined);
+    inspectionReaders.delete(reader);
+    const pending = pendingLiveCaptures.get(captureId);
+    if (pending) {
+      pending.httpActive = false;
+      pending.expiresAt = Date.now() + PENDING_CAPTURE_TTL_MS;
+    }
   }
   emit({
     captureId,
     source: 'page_fetch',
     captureMode: 'live',
-    phase: 'completed',
+    phase: handedOff ? 'responding' : 'completed',
     observedAt: now(),
     startedAt,
-    completedAt: now(),
-    pageUrl: safePageUrl(),
+    ...(!handedOff ? { completedAt: now() } : {}),
+    pageUrl,
     ...fields
   });
+  if (!handedOff) pendingLiveCaptures.delete(captureId);
+}
+
+async function boundedResponseText(response: Response, maxBytes: number, errorCode: string): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  inspectionReaders.add(reader);
+  try {
+    if (Number(response.headers.get('content-length') ?? '0') > maxBytes) throw new Error(errorCode);
+    const decoder = new TextDecoder();
+    let bytes = 0;
+    const chunks: string[] = [];
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maxBytes) throw new Error(errorCode);
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+    chunks.push(decoder.decode());
+    return chunks.join('');
+  } finally {
+    inspectionReaders.delete(reader);
+    void reader.cancel().catch(() => undefined);
+  }
 }
 
 async function parseConversationJson(
   response: Response,
   captureId: string,
   startedAt: string,
-  conversationId: string | null
+  conversationId: string | null,
+  pageUrl: string,
+  quotaAtStart: Partial<UsageQuotaFields>
 ): Promise<void> {
-  const declaredLength = Number(response.headers.get('content-length') ?? '0');
-  if (declaredLength > MAX_CONVERSATION_RECORD_BYTES) {
-    emit({
-      captureId,
-      source: 'conversation_record',
-      captureMode: 'reload',
-      phase: 'failed',
-      observedAt: now(),
-      startedAt,
-      completedAt: now(),
-      pageUrl: safePageUrl(),
-      conversationId,
-      errorCode: 'record_too_large'
-    });
-    return;
-  }
-  const raw = await response.text();
-  if (raw.length > MAX_CONVERSATION_RECORD_BYTES) {
-    emit({
-      captureId,
-      source: 'conversation_record',
-      captureMode: 'reload',
-      phase: 'failed',
-      observedAt: now(),
-      startedAt,
-      completedAt: now(),
-      pageUrl: safePageUrl(),
-      conversationId,
-      errorCode: 'record_too_large'
-    });
-    return;
-  }
-  const results = parseResponseText(raw).filter((fields) =>
+  const raw = await boundedResponseText(response, MAX_CONVERSATION_RECORD_BYTES, 'record_too_large');
+  const parsed: unknown = JSON.parse(raw);
+  const ownQuota = rememberQuota(parseUsageQuota(parsed), startedAt);
+  const results = parseResponseValue(parsed).filter((fields) =>
     Boolean(fields.responseModelSlug || fields.resolvedModelSlug || fields.serverModelSlug)
   );
   for (const [index, fields] of results.entries()) {
     emit({
-      captureId: `${captureId}:${fields.requestId ?? index}`,
+      captureId: `${captureId}:${index}`,
       source: 'conversation_record',
       captureMode: 'reload',
       phase: 'completed',
       observedAt: now(),
       startedAt,
       completedAt: now(),
-      pageUrl: safePageUrl(),
-      ...fields,
+      pageUrl,
+      ...mergeRouteFields(quotaAtStart, fields, ownQuota ?? {}),
       conversationId: conversationId ?? fields.conversationId
     });
   }
 }
 
-async function parsePowJson(response: Response): Promise<void> {
-  const declaredLength = Number(response.headers.get('content-length') ?? '0');
-  if (declaredLength > MAX_POW_RESPONSE_BYTES) return;
-  const raw = await response.text();
-  if (raw.length > MAX_POW_RESPONSE_BYTES) return;
+async function parseQuotaJson(response: Response, startedAt: string): Promise<void> {
+  const raw = await boundedResponseText(response, MAX_POW_RESPONSE_BYTES, 'quota_too_large');
+  if (canCapture(null, startedAt)) rememberQuota(parseUsageQuota(JSON.parse(raw) as unknown), startedAt);
+}
+
+async function parsePowJson(response: Response, startedAt: string): Promise<void> {
+  const raw = await boundedResponseText(response, MAX_POW_RESPONSE_BYTES, 'pow_too_large');
   const parsed = parsePowResponse(JSON.parse(raw) as unknown);
   if (!parsed) return;
-  emitPow({ rawHex: parsed.rawHex, observedAt: now() });
+  emitPow({ rawHex: parsed.rawHex, observedAt: now(), startedAt });
 }
 
 async function inspectFetch(
@@ -343,17 +434,26 @@ async function inspectFetch(
   const downstreamReceiver = receiver ?? window;
   const url = requestUrl(input);
   const endpoint = classifyEndpoint(url, location.href);
-  if (!isAllowedRequest(url) || endpoint.kind === 'other') {
+  const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+  const metadataOnly = endpoint.kind === 'pow_requirements' || endpoint.kind === 'conversation_init';
+  const mode = metadataOnly ? null : endpoint.kind === 'conversation_stream' ? 'live' : 'reload';
+  if (!canCapture(mode) || !isAllowedRequest(url) || endpoint.kind === 'other' ||
+    (endpoint.kind === 'conversation_stream' && method !== 'POST')) {
     return downstreamFetch.call(downstreamReceiver, input, init);
   }
 
   const captureId = crypto.randomUUID();
   const startedAt = now();
+  const pageUrl = safePageUrl();
+  const quotaAtStart = latestQuota ? { ...latestQuota } : {};
   const bodyPromise = endpoint.kind === 'conversation_stream' ? requestBody(input, init) : Promise.resolve(null);
   const requestFieldsPromise = bodyPromise.then((raw) => {
     if (!raw) return null;
-    const fields = parseConversationRequest(raw);
-    registerPendingCapture(captureId, startedAt, parseConversationCorrelation(raw));
+    const parsed = parseConversationCapture(raw);
+    const fields = mergeRouteFields(quotaAtStart, parsed.fields);
+    const { correlation } = parsed;
+    if (!canCapture('live', startedAt)) return fields;
+    registerPendingCapture(captureId, startedAt, correlation, pageUrl);
     emit({
       captureId,
       source: 'page_fetch',
@@ -361,65 +461,51 @@ async function inspectFetch(
       phase: 'requested',
       observedAt: now(),
       startedAt,
-      pageUrl: safePageUrl(),
+      pageUrl,
       ...fields
     });
     return fields;
   });
-  const responsePromise = downstreamFetch.call(downstreamReceiver, input, init);
-
-  try {
-    const response = await responsePromise;
-    const clone = response.clone();
-    if (endpoint.kind === 'pow_requirements') {
-      void parsePowJson(clone).catch(() => undefined);
-    } else if (endpoint.kind === 'conversation_stream') {
-      void requestFieldsPromise.then((fields) => parseSseStream(
-        clone,
-        captureId,
-        startedAt,
-        fields ?? mergeRouteFields()
-      )).catch(() => emit({
-        captureId,
-        source: 'page_fetch',
-        captureMode: 'live',
-        phase: 'failed',
-        observedAt: now(),
-        startedAt,
-        completedAt: now(),
-        pageUrl: safePageUrl(),
-        errorCode: 'stream_parse_failed'
-      }));
-    } else {
-      void parseConversationJson(clone, captureId, startedAt, endpoint.conversationId).catch(() => emit({
-        captureId,
-        source: 'conversation_record',
-        captureMode: 'reload',
-        phase: 'failed',
-        observedAt: now(),
-        startedAt,
-        completedAt: now(),
-        pageUrl: safePageUrl(),
-        conversationId: endpoint.conversationId,
-        errorCode: 'record_parse_failed'
-      }));
-    }
-    return response;
-  } catch (error) {
-    if (endpoint.kind === 'pow_requirements') throw error;
+  const failed = (errorCode: string): void => {
+    pendingLiveCaptures.delete(captureId);
+    if (metadataOnly) return;
     emit({
-      captureId,
-      source: endpoint.kind === 'conversation_stream' ? 'page_fetch' : 'conversation_record',
-      captureMode: endpoint.kind === 'conversation_stream' ? 'live' : 'reload',
-      phase: 'failed',
-      observedAt: now(),
-      startedAt,
-      completedAt: now(),
-      pageUrl: safePageUrl(),
-      errorCode: error instanceof Error ? error.name : 'fetch_failed'
+      captureId, source: endpoint.kind === 'conversation_stream' ? 'page_fetch' : 'conversation_record',
+      captureMode: mode ?? 'live', phase: 'failed', observedAt: now(), startedAt, completedAt: now(),
+      pageUrl, conversationId: endpoint.conversationId, errorCode
     });
+  };
+  let response: Response;
+  try {
+    response = await downstreamFetch.call(downstreamReceiver, input, init);
+  } catch (error) {
+    void requestFieldsPromise.then(() => failed(error instanceof Error ? error.name : 'fetch_failed'));
     throw error;
   }
+  if (!canCapture(mode, startedAt)) return response;
+  const contentType = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() ?? '';
+  const validType = endpoint.kind === 'conversation_stream'
+    ? contentType === 'text/event-stream'
+    : contentType === 'application/json' || /^application\/[\w.-]+\+json$/.test(contentType);
+  if (!response.ok || !validType) {
+    void requestFieldsPromise.then(() => failed(!response.ok ? `http_${response.status}` : 'unexpected_content_type'));
+    return response;
+  }
+  // Clone synchronously, before the page can lock its response, but keep all inspection errors off the page's fetch path.
+  try {
+    const clone = response.clone();
+    void requestFieldsPromise.then(async (fields) => {
+      if (!canCapture(mode, startedAt)) { void clone.body?.cancel().catch(() => undefined); return; }
+      if (endpoint.kind === 'pow_requirements') await parsePowJson(clone, startedAt);
+      else if (endpoint.kind === 'conversation_init') await parseQuotaJson(clone, startedAt);
+      else if (endpoint.kind === 'conversation_stream') await parseSseStream(clone, captureId, startedAt, fields ?? mergeRouteFields(quotaAtStart), pageUrl);
+      else await parseConversationJson(clone, captureId, startedAt, endpoint.conversationId, pageUrl, quotaAtStart);
+    }).catch((error: unknown) => failed(error instanceof Error && error.message === 'record_too_large'
+      ? 'record_too_large' : endpoint.kind === 'conversation_stream' ? 'stream_parse_failed' : 'record_parse_failed'));
+  } catch {
+    void requestFieldsPromise.then(() => failed('response_clone_failed'));
+  }
+  return response;
 }
 
 interface FetchGeneration {
@@ -516,10 +602,12 @@ function isAllowedWebSocket(url: string): boolean {
 function observeWebSocket(socket: WebSocket): void {
   if (observedSockets.has(socket) || !isAllowedWebSocket(socket.url)) return;
   observedSockets.add(socket);
+  const parser = new WebSocketRouteParser();
+  socket.addEventListener('close', () => parser.clear(), { once: true });
   socket.addEventListener('message', (event) => {
-    if (typeof event.data !== 'string') return;
+    if (typeof event.data !== 'string' || !canCapture('live') || pendingLiveCaptures.size === 0) { parser.clear(); return; }
     const raw = event.data;
-    queueMicrotask(() => handleWebSocketText(raw));
+    queueMicrotask(() => handleWebSocketText(raw, parser));
   });
 }
 

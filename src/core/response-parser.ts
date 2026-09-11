@@ -1,4 +1,6 @@
 import { EMPTY_ROUTE_FIELDS, type RouteFields } from './types';
+import { SseDecoder, type DecodedSseEvent } from './sse-decoder';
+import { parseUsageQuota } from './usage-quota';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -33,6 +35,7 @@ function mergeFields(base: RouteFields, next: Partial<RouteFields>): RouteFields
 function extractMetadata(metadata: UnknownRecord, modelKind: 'assistant' | 'server' | 'none' = 'none'): Partial<RouteFields> {
   const model = stringValue(metadata.model_slug);
   return {
+    ...parseUsageQuota(metadata),
     responseModelSlug: modelKind === 'assistant' ? model : null,
     serverModelSlug: modelKind === 'server' ? model : null,
     defaultModelSlug: stringValue(metadata.default_model_slug),
@@ -52,7 +55,12 @@ function walkForFields(value: unknown, accumulator: RouteFields, depth = 0, budg
   if (depth > 10 || budget.count > 3000) return accumulator;
   budget.count += 1;
   if (Array.isArray(value)) {
-    return value.reduce((result, item) => walkForFields(item, result, depth + 1, budget), accumulator);
+    let result = accumulator;
+    for (const item of value) {
+      if (budget.count > 3000) break;
+      result = walkForFields(item, result, depth + 1, budget);
+    }
+    return result;
   }
   const record = asRecord(value);
   if (!record) return accumulator;
@@ -74,25 +82,42 @@ function walkForFields(value: unknown, accumulator: RouteFields, depth = 0, budg
   }
 
   for (const [key, nested] of Object.entries(record)) {
+    if (budget.count > 3000) break;
+    // Message bodies and tool payloads are not metadata containers.
+    if (['content', 'parts', 'text', 'args', 'arguments', 'input', 'output'].includes(key)) continue;
     if (record.type === 'server_ste_metadata' && key === 'metadata') continue;
     if (nested && typeof nested === 'object') result = walkForFields(nested, result, depth + 1, budget);
   }
   return result;
 }
 
-export function parseSseResponse(raw: string): RouteFields {
-  let fields = { ...EMPTY_ROUTE_FIELDS };
-  for (const line of raw.split(/\r?\n/)) {
-    if (!line.startsWith('data:')) continue;
-    const payload = line.slice(5).trim();
-    if (!payload || payload === '[DONE]') continue;
-    try {
-      fields = walkForFields(JSON.parse(payload) as unknown, fields);
-    } catch {
-      // Partial streaming lines are ignored; the next complete event may carry the same metadata.
-    }
+export class ResponseStreamParser {
+  private decoder = new SseDecoder();
+  private fields: RouteFields = { ...EMPTY_ROUTE_FIELDS };
+
+  constructor(private readonly onEvent?: (event: DecodedSseEvent) => void) {}
+
+  private accept = (event: DecodedSseEvent): void => {
+    if (event.reset) this.fields = { ...EMPTY_ROUTE_FIELDS };
+    if (!event.done) this.fields = walkForFields(event.value, this.fields);
+    this.onEvent?.(event);
+  };
+
+  push(text: string): RouteFields {
+    this.decoder.push(text, this.accept);
+    return { ...this.fields };
   }
-  return fields;
+
+  finish(): RouteFields {
+    this.decoder.finish(this.accept);
+    return { ...this.fields };
+  }
+}
+
+export function parseSseResponse(raw: string): RouteFields {
+  const parser = new ResponseStreamParser();
+  parser.push(raw);
+  return parser.finish();
 }
 
 function messageFields(message: UnknownRecord): RouteFields {
@@ -197,7 +222,7 @@ export function parseConversationRecord(value: unknown): RouteFields[] {
     }
     // A paginated older page can reference a current node that is not part of that page.
     // It must not replace the current response with an older turn.
-    if (messages) return [];
+    return [];
   }
 
   const grouped = new Map<string, RouteFields>();
@@ -221,11 +246,18 @@ export function parseResponseText(raw: string): RouteFields[] {
   if (/^\s*data:/m.test(raw)) return [parseSseResponse(raw)];
   try {
     const parsed = JSON.parse(raw) as unknown;
-    const conversation = parseConversationRecord(parsed);
-    return conversation.length > 0 ? conversation : [walkForFields(parsed, { ...EMPTY_ROUTE_FIELDS })];
+    return parseResponseValue(parsed);
   } catch {
     return [];
   }
+}
+
+export function parseResponseValue(parsed: unknown): RouteFields[] {
+  const root = asRecord(parsed);
+  if (asRecord(root?.mapping) || Array.isArray(root?.messages)) {
+    return parseConversationRecord(parsed).map((fields) => mergeFields(fields, parseUsageQuota(parsed)));
+  }
+  return [walkForFields(parsed, { ...EMPTY_ROUTE_FIELDS })];
 }
 
 export function mergeRouteFields(...items: Array<Partial<RouteFields>>): RouteFields {

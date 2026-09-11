@@ -5,8 +5,30 @@ import { mergeRouteFields, parseConversationRecord, parseResponseText, parseSseR
 const abnormal = readFileSync(new URL('../fixtures/abnormal-response.sse', import.meta.url), 'utf8');
 const normal = readFileSync(new URL('../fixtures/normal-response.sse', import.meta.url), 'utf8');
 const record = readFileSync(new URL('../fixtures/conversation-record.json', import.meta.url), 'utf8');
+const delta = readFileSync(new URL('../fixtures/delta-response.sse', import.meta.url), 'utf8');
 
 describe('response parsers', () => {
+  it('ignores metadata-shaped objects inside message text and tool payloads', () => {
+    const payload = {
+      message: { author: { role: 'assistant' }, metadata: { model_slug: 'real', resolved_model_slug: 'real' },
+        content: { resolved_model_slug: 'forged', metadata: { model_slug: 'forged' } } },
+      arguments: { resolved_model_slug: 'forged' }, output: { resolved_model_slug: 'forged' }
+    };
+    expect(parseResponseText(JSON.stringify(payload))[0]?.resolvedModelSlug).toBe('real');
+    expect(parseSseResponse(`data: ${JSON.stringify(payload)}\n\n`).responseModelSlug).toBe('real');
+  });
+  it('reads assistant labels delivered as later delta metadata patches', () => {
+    const result = parseSseResponse(delta);
+    expect(result).toMatchObject({
+      responseModelSlug: 'gpt-6-pro',
+      resolvedModelSlug: 'gpt-6-pro',
+      serverModelSlug: 'gpt-6-pro',
+      conversationId: 'conv-delta',
+      requestId: 'req-delta'
+    });
+    expect(JSON.stringify(result)).not.toMatch(/SECRET_DELTA|untrusted-user-label/);
+  });
+
   it('extracts an abnormal server-reported route without retaining response text', () => {
     const result = parseSseResponse(abnormal);
     expect(result).toMatchObject({

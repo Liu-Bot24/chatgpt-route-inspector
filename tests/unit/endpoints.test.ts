@@ -3,6 +3,9 @@ import { classifyEndpoint } from '../../src/core/endpoints';
 
 describe('classifyEndpoint', () => {
   it('matches legacy and future-compatible conversation stream endpoints', () => {
+    expect(classifyEndpoint('/backend-api/conversation')).toEqual({
+      kind: 'conversation_stream', conversationId: null
+    });
     expect(classifyEndpoint('/backend-api/f/conversation')).toEqual({
       kind: 'conversation_stream', conversationId: null
     });
@@ -34,6 +37,8 @@ describe('classifyEndpoint', () => {
   });
 
   it('does not match similar or malformed paths', () => {
+    expect(classifyEndpoint('/backend-api/conversations?offset=0').kind).toBe('other');
+    expect(classifyEndpoint('/backend-api/conversation-other').kind).toBe('other');
     expect(classifyEndpoint('/backend-api/f/conversation/extra').kind).toBe('other');
     expect(classifyEndpoint('/backend-api/f/conversations/extra').kind).toBe('other');
     expect(classifyEndpoint('/backend-api/conversation/a/messages').kind).toBe('other');

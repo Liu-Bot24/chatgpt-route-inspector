@@ -1,0 +1,23 @@
+: Synthetic protocol fixture based on the ChatGPT delta v1 decoder inspected on 2026-09-11.
+event: delta_encoding
+data: "v1"
+
+event: delta
+data: {"p":"","o":"add","v":{"message":{"id":"input-delta","author":{"role":"user"},"content":{"parts":["SECRET_DELTA_PROMPT"]},"metadata":{"model_slug":"untrusted-user-label"}},"conversation_id":"conv-delta"},"c":0}
+
+event: delta
+data: {"p":"","o":"add","v":{"message":{"id":"assistant-delta","parent_id":"input-delta","author":{"role":"assistant"},"content":{"parts":["SECRET_DELTA_ANSWER"]},"metadata":{}},"conversation_id":"conv-delta"},"c":1}
+
+event: delta
+data: {"p":"/message/metadata","o":"append","v":{"model_slug":"gpt-6-pro","resolved_model_slug":"gpt-6-pro","request_id":"req-delta"}}
+
+event: delta
+data: {"p":"/message/content/parts/0","o":"append","v":"SECRET_DELTA_CONTINUATION"}
+
+event: delta
+data: {"v":"SECRET_DELTA_INHERITED"}
+
+event: delta
+data: {"p":"","o":"replace","v":{"type":"server_ste_metadata","metadata":{"model_slug":"gpt-6-pro"},"conversation_id":"conv-delta"},"c":2}
+
+data: [DONE]

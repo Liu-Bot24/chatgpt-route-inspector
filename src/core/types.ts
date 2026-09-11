@@ -1,12 +1,12 @@
 export const ROUTE_SCHEMA = 'chatgpt-route-observation' as const;
-export const ROUTE_SCHEMA_VERSION = '1.4.0' as const;
+export const ROUTE_SCHEMA_VERSION = '1.6.0' as const;
 
 export type CaptureSource = 'page_fetch' | 'page_websocket' | 'conversation_record' | 'assistant_dom';
 export type CaptureMode = 'live' | 'reload';
 export type UiLanguage = 'zh' | 'en';
 export type OverlayMode = 'full' | 'compact' | 'mini' | 'docked';
 export type CapturePhase = 'requested' | 'responding' | 'completed' | 'failed';
-export type RouteVerdict = 'normal' | 'mismatch' | 'conflict' | 'unknown';
+export type RouteVerdict = 'normal' | 'mismatch' | 'conflict' | 'unknown' | 'auto_reasoning';
 export type ModelLabelSource =
   | 'assistant.metadata.model_slug'
   | 'assistant[data-message-model-slug]';
@@ -20,7 +20,20 @@ export function normalizeOverlayMode(value: unknown, legacyMinimized = false): O
   return legacyMinimized ? 'compact' : 'full';
 }
 
-export interface RouteFields {
+export interface UsageQuotaFields {
+  deepResearchRemaining: number | null;
+  deepResearchResetAt: string | null;
+  imageGenRemaining: number | null;
+  imageGenResetAt: string | null;
+  quotaObservedAt: string | null;
+}
+
+export const EMPTY_QUOTA_FIELDS: UsageQuotaFields = {
+  deepResearchRemaining: null, deepResearchResetAt: null,
+  imageGenRemaining: null, imageGenResetAt: null, quotaObservedAt: null
+};
+
+export interface RouteFields extends UsageQuotaFields {
   requestedModel: string | null;
   responseModelSlug: string | null;
   defaultModelSlug: string | null;
@@ -94,6 +107,7 @@ export interface InspectorSettings {
 }
 
 export interface PowObservation {
+  startedAt?: string;
   rawHex: string;
   observedAt: string;
   tabId?: number;
@@ -107,6 +121,9 @@ export interface PowReading {
 }
 
 export interface InspectorState {
+  /** Persisted monotonic snapshot version; absent only in older installations. */
+  revision?: number;
+  clearedAt?: string;
   turns: RouteTurn[];
   powReadings: PowReading[];
   settings: InspectorSettings;
@@ -118,6 +135,7 @@ export interface InspectorState {
 }
 
 export const EMPTY_ROUTE_FIELDS: RouteFields = {
+  ...EMPTY_QUOTA_FIELDS,
   requestedModel: null,
   responseModelSlug: null,
   defaultModelSlug: null,

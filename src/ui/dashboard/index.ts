@@ -1,4 +1,5 @@
 import { buildMarkdownReport, sanitizedExport } from '../../core/privacy';
+import { isStaleState } from '../../core/state';
 import type { CaptureMode, InspectorState, RouteTurn, RouteVerdict, UiLanguage } from '../../core/types';
 import {
   captureModeLabel,
@@ -6,7 +7,6 @@ import {
   formatDuration,
   formatTime,
   getState,
-  modelLabelSourcesLabel,
   modelLabel,
   recordedModelLabel,
   requestedModelLabel,
@@ -22,6 +22,25 @@ let state: InspectorState;
 let filter: RouteVerdict | 'all' = 'all';
 let modeFilter: CaptureMode | 'all' = 'all';
 let selectedId: string | null = null;
+
+const evidenceFieldHints: Partial<Record<TranslationKey, string>> = {
+  'detail.assistantMetadataLabel': 'assistant.metadata.model_slug',
+  'detail.renderedAssistantLabel': 'assistant[data-message-model-slug]',
+  'detail.resolvedModel': 'resolved_model_slug',
+  'detail.serverModel': 'server_ste_metadata.model_slug',
+  'detail.deepResearchRemaining': 'limits_progress[feature_name=deep_research].remaining',
+  'detail.deepResearchResetAt': 'limits_progress[feature_name=deep_research].reset_after',
+  'detail.imageGenRemaining': 'limits_progress[feature_name=image_gen].remaining',
+  'detail.imageGenResetAt': 'limits_progress[feature_name=image_gen].reset_after'
+};
+
+function quotaTime(value: string | null | undefined, language: UiLanguage): string {
+  if (!value || !Number.isFinite(Date.parse(value))) return t(language, 'quota.notCaptured');
+  const formatted = new Intl.DateTimeFormat(language === 'zh' ? 'zh-CN' : 'en-GB', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+  }).format(new Date(value));
+  return `${formatted} ${language === 'zh' ? '（北京时间）' : '(UTC+08:00)'}`;
+}
 
 function toast(message: string): void {
   const element = document.querySelector<HTMLElement>('#toast');
@@ -57,28 +76,46 @@ function renderDetail(turn: RouteTurn | null, language: UiLanguage): void {
   tag.textContent = turnResultLabel(turn, language);
   const items: Array<[TranslationKey, string | number | boolean | null]> = [
     ['detail.captureMode', captureModeLabel(turn.captureMode, language)],
-    ['detail.requestedModel', requestedModelLabel(turn, language)],
-    ['detail.modelLabel', recordedModelLabel(turn, language)],
-    ['detail.modelLabelSource', modelLabelSourcesLabel(turn, language)],
-    ['detail.responseRoute', turn.routeModel],
+    ['detail.captureStatus', t(language, ({
+      requested: 'phase.requested', responding: 'phase.responding', completed: 'phase.completed', failed: 'phase.failed'
+    } as const)[turn.phase])],
+    ['detail.errorCode', turn.errorCode],
+    ['detail.requestedModel', turn.requestedModel ?? requestedModelLabel(turn, language)],
+    ['detail.responseRoute', turn.verdict === 'conflict' ? t(language, 'result.routeConflict') : turn.routeModel],
     ['detail.routeFieldSource', routeSourcesLabel(turn, language)],
-    ['detail.assistantMetadataLabel', turn.responseModelSlug],
-    ['detail.renderedAssistantLabel', turn.domModelSlug],
     ['detail.resolvedModel', turn.resolvedModelSlug],
     ['detail.serverModel', turn.serverModelSlug],
-    ['detail.planType', turn.planType],
+    ['detail.assistantMetadataLabel', turn.responseModelSlug],
+    ['detail.modelLabelSource', turn.responseModelSlug ? 'assistant.metadata.model_slug' : null],
+    ['detail.renderedAssistantLabel', turn.domModelSlug],
     ['detail.thinkingEffort', turn.thinkingEffort],
     ['detail.fastConvo', turn.fastConvo],
+    ['detail.planType', turn.planType],
+    ['detail.deepResearchRemaining', turn.deepResearchRemaining ?? t(language, 'quota.notCaptured')],
+    ['detail.deepResearchResetAt', quotaTime(turn.deepResearchResetAt, language)],
+    ['detail.imageGenRemaining', turn.imageGenRemaining ?? t(language, 'quota.notCaptured')],
+    ['detail.imageGenResetAt', quotaTime(turn.imageGenResetAt, language)],
     ['detail.requestId', turn.requestId],
     ['detail.networkId', turn.networkRequestId],
     ['detail.duration', formatDuration(turn.durationMs)],
     ['detail.adapters', turn.sources.join(' + ')]
   ];
   const availableItems = items.filter(([, value]) => value !== null && value !== '');
-  detail.innerHTML = `<div class="evidence-list">${availableItems.map(([label, value]) => `<div class="evidence"><small>${escapeHtml(t(language, label))}</small><code>${escapeHtml(value)}</code></div>`).join('')}</div>`;
+  detail.innerHTML = `<div class="evidence-list">${availableItems.map(([label, value]) => {
+    const isAssistantLabel = label === 'detail.assistantMetadataLabel';
+    const quotaHint = evidenceFieldHints[label]?.startsWith('limits_progress')
+      ? `${evidenceFieldHints[label]}\n${t(language, 'quota.snapshotHint', { time: quotaTime(turn.quotaObservedAt, language) })}` : null;
+    const hint = isAssistantLabel ? t(language, 'detail.assistantReferenceHint') : quotaHint ?? evidenceFieldHints[label];
+    const name = `<small${hint ? ` title="${escapeHtml(hint)}"` : ''}>${escapeHtml(t(language, label))}</small>`;
+    const labelHtml = isAssistantLabel
+      ? `<div class="evidence-label">${name}<sup class="evidence-note" tabindex="0" title="${escapeHtml(hint)}" aria-label="${escapeHtml(hint)}">*</sup></div>`
+      : name;
+    return `<div class="evidence">${labelHtml}<code>${escapeHtml(value)}</code></div>`;
+  }).join('')}</div>`;
 }
 
 function render(next: InspectorState): void {
+  if (isStaleState(state, next)) return;
   state = next;
   const language = state.settings.uiLanguage;
   applyStaticTranslations(language);
@@ -88,7 +125,7 @@ function render(next: InspectorState): void {
   const anomaly = state.turns.filter((turn) => turn.verdict === 'mismatch' || turn.verdict === 'conflict').length;
   document.querySelector<HTMLElement>('#summary')!.innerHTML = `<div class="readout"><small>${escapeHtml(t(language, 'summary.total'))}</small><b>${total}</b></div><div class="readout"><small>${escapeHtml(t(language, 'summary.live'))}</small><b class="signal-text">${live}</b></div><div class="readout"><small>${escapeHtml(t(language, 'summary.reload'))}</small><b class="amber-text">${reload}</b></div><div class="readout"><small>${escapeHtml(t(language, 'summary.anomalies'))}</small><b class="danger-text">${anomaly}</b></div>`;
 
-  const verdictFilters: Array<[RouteVerdict | 'all', TranslationKey]> = [['all', 'filter.allVerdicts'], ['normal', 'filter.normal'], ['mismatch', 'filter.mismatch'], ['conflict', 'filter.conflict'], ['unknown', 'filter.unknown']];
+  const verdictFilters: Array<[RouteVerdict | 'all', TranslationKey]> = [['all', 'filter.allVerdicts'], ['normal', 'filter.normal'], ['auto_reasoning', 'filter.autoReasoning'], ['mismatch', 'filter.mismatch'], ['conflict', 'filter.conflict'], ['unknown', 'filter.unknown']];
   const modeFilters: Array<[CaptureMode | 'all', TranslationKey]> = [['all', 'filter.allModes'], ['live', 'mode.live'], ['reload', 'mode.reload']];
   document.querySelector<HTMLElement>('#filters')!.innerHTML = verdictFilters.map(([value, label]) => `<button class="filter-button ${filter === value ? 'active' : ''}" data-filter="${value}">${escapeHtml(t(language, label))}</button>`).join('');
   document.querySelector<HTMLElement>('#mode-filters')!.innerHTML = modeFilters.map(([value, label]) => `<button class="filter-button ${modeFilter === value ? 'active' : ''}" data-mode-filter="${value}">${escapeHtml(t(language, label))}</button>`).join('');
@@ -112,6 +149,7 @@ function render(next: InspectorState): void {
 bindLanguageSwitch(async (uiLanguage) => {
   if (state?.settings.uiLanguage === uiLanguage) return;
   const response = await send({ type: 'route:update-settings', settings: { uiLanguage } });
+  if (!response.ok) return;
   if (response.state) render(response.state);
 });
 document.querySelector('#export-json')?.addEventListener('click', () => download(`route-inspector-${Date.now()}.json`, JSON.stringify(sanitizedExport(state), null, 2), 'application/json'));
@@ -119,8 +157,10 @@ document.querySelector('#export-md')?.addEventListener('click', () => download(`
 document.querySelector('#clear')?.addEventListener('click', async () => {
   if (!confirm(t(state.settings.uiLanguage, 'confirm.clearAll'))) return;
   const response = await send({ type: 'route:clear' });
+  if (!response.ok) return;
   if (response.state) render(response.state);
   toast(t(state.settings.uiLanguage, 'toast.cleared'));
 });
 
-void getState().then((initial) => { render(initial); subscribe(render); });
+subscribe(render);
+void getState().then(render);

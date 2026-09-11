@@ -55,6 +55,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .signal-pill::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--muted); }
 .signal-pill.live::before { background:var(--signal); box-shadow:0 0 12px var(--signal); }
 .tag.signal { color:var(--signal); border-color:rgba(178,244,91,.38); }
+.tag.auto { color:#75c5d8; border-color:rgba(117,197,216,.5); }
 .tag.amber { color:var(--amber); border-color:rgba(240,179,91,.42); }
 .tag.danger { color:var(--danger); border-color:rgba(242,115,99,.5); }
 
@@ -145,13 +146,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .mono { font-family:var(--mono); overflow-wrap:anywhere; }
 .muted { color:var(--muted); }
 .signal-text { color:var(--signal); }
+.auto-text { color:#75c5d8; }
 .amber-text { color:var(--amber); }
 .danger-text { color:var(--danger); }
 .evidence-list { display:grid; gap:9px; }
 .evidence { display:grid; grid-template-columns:135px minmax(0,1fr); gap:12px; padding:9px 0; border-bottom:1px solid var(--line); }
 .evidence:last-child { border-bottom:0; }
-.evidence small { color:var(--muted); font:8px var(--mono); letter-spacing:.08em; text-transform:uppercase; }
+.evidence small { min-width:0; color:var(--muted); font:8px var(--mono); letter-spacing:.08em; text-transform:none; overflow-wrap:anywhere; }
 .evidence code { color:var(--text); font:11px/1.45 var(--mono); overflow-wrap:anywhere; }
+.evidence-label { display:flex; flex-wrap:wrap; align-items:center; align-content:start; gap:2px; min-width:0; }
+.evidence-note { align-self:flex-start; padding:0; border:0; color:var(--muted); font:10px/1 var(--mono); transform:translateY(-1px); cursor:help; }
+.evidence-note:focus-visible { outline:1px solid var(--muted); outline-offset:2px; }
 .timeline { position:relative; display:grid; gap:13px; }
 .timeline::before { content:""; position:absolute; left:5px; top:4px; bottom:5px; width:1px; background:var(--line-strong); }
 .timeline-item { position:relative; padding-left:24px; }
