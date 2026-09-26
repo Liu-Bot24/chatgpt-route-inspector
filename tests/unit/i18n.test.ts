@@ -27,6 +27,9 @@ describe('UI translations', () => {
       expect(t('en', translatedKey)).not.toMatch(/[\u4e00-\u9fff]/);
     }
     expect(t('zh', 'notice.badge')).toBe('版本公告');
+    expect(t('zh', 'notice.pollBefore')).toBe('根据此前');
+    expect(t('zh', 'notice.subtitle')).toBe('1.0.9 · 版本公告');
+    expect(t('zh', 'notice.release109')).toContain('新建会话');
     expect(t('zh', 'notice.pollLink')).toBe('投票');
     expect(t('zh', 'notice.pollResult')).toContain('约 80% 未降级');
     expect(t('zh', 'notice.pollResult')).toContain('约 80% 发生了降级');
@@ -146,7 +149,7 @@ describe('UI translations', () => {
       expect(keys.filter((key) => !known.has(key))).toEqual([]);
       if (page === 'dashboard') {
         expect(html).toContain('id="dashboard-version"');
-        expect(html).toContain('href="../announcement/index.html"');
+        expect(html).toContain('href="https://rinotice.liu-qi.cn/"');
         expect(html).toContain('https://github.com/Liu-Bot24/chatgpt-route-inspector');
         expect(html).not.toContain('Created by @liuqi');
       } else {

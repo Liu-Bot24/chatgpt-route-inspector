@@ -158,6 +158,19 @@ test.beforeAll(async () => {
   });
   worker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
   extensionId = new URL(worker.url()).host;
+  // Verify external navigation against the built site, without depending on production.
+  await context.route('https://rinotice.liu-qi.cn/**', async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    const files: Record<string, { file: string; contentType: string }> = {
+      '/': { file: 'index.html', contentType: 'text/html; charset=utf-8' },
+      '/notice.js': { file: 'notice.js', contentType: 'application/javascript' },
+      '/ui/shared/styles.css': { file: 'ui/shared/styles.css', contentType: 'text/css' },
+      '/icons/icon-48.png': { file: 'icons/icon-48.png', contentType: 'image/png' }
+    };
+    const asset = files[pathname];
+    if (!asset) { await route.fulfill({ status: 404, body: '' }); return; }
+    await route.fulfill({ path: path.join(root, 'dist/notice', asset.file), contentType: asset.contentType });
+  });
 });
 
 test.afterAll(async () => {
@@ -175,7 +188,7 @@ test('links the dashboard version to its notice and keeps GitHub separate', asyn
   await dashboard.goto(`chrome-extension://${extensionId}/ui/dashboard/index.html`);
   const version = await dashboard.evaluate(() => chrome.runtime.getManifest().version);
   await expect(dashboard.locator('#dashboard-version')).toHaveText(`v${version}`);
-  await expect(dashboard.locator('#dashboard-version')).toHaveAttribute('href', '../announcement/index.html');
+  await expect(dashboard.locator('#dashboard-version')).toHaveAttribute('href', 'https://rinotice.liu-qi.cn/');
   await expect(dashboard.locator('#dashboard-version')).toHaveAttribute('target', '_blank');
   const github = dashboard.locator('.masthead .brand-github');
   await expect(github).toHaveText('GitHub');
@@ -194,7 +207,8 @@ test('links the dashboard version to its notice and keeps GitHub separate', asyn
   const noticeOpened = context.waitForEvent('page');
   await dashboard.locator('#dashboard-version').click();
   const notice = await noticeOpened;
-  await notice.waitForURL(`chrome-extension://${extensionId}/ui/announcement/index.html`);
+  await notice.waitForURL('https://rinotice.liu-qi.cn/');
+  await notice.getByRole('button', { name: '中', exact: true }).click();
   await expect(notice.locator('[data-i18n="notice.badge"]')).toHaveText('版本公告');
   await notice.close();
   await dashboard.evaluate(async () => chrome.runtime.sendMessage({ type: 'route:update-settings', settings: { uiLanguage: 'en' } }));
@@ -286,7 +300,8 @@ test('anchors the yellow suspected-downgrade hint to the status in live and relo
   const opened = context.waitForEvent('page');
   await link.click();
   const notice = await opened;
-  await notice.waitForURL(`chrome-extension://${extensionId}/ui/announcement/index.html`);
+  await notice.waitForURL('https://rinotice.liu-qi.cn/');
+  await notice.getByRole('button', { name: '中', exact: true }).click();
   await expect(notice.locator('#notice-title')).toHaveCount(0);
   await expect(notice.locator('.announcement-body > .tag')).toHaveText('版本公告');
   await expect(notice.locator('.announcement-points > li')).toHaveCount(2);
@@ -298,7 +313,8 @@ test('anchors the yellow suspected-downgrade hint to the status in live and relo
   await expect(notice.locator('.announcement-points .announcement-note-anchor')).toHaveCSS('white-space', 'nowrap');
   await expect(notice.locator('.announcement-points .announcement-note-anchor')).toHaveText('提醒。*');
   await expect(notice.locator('.announcement-footnote')).toContainText('单纯图片生成任务响应结果中不带 resolved_model_slug 字段属正常现象，请自行辨别。');
-  await expect(notice.locator('.announcement-releases li').first()).toContainText('新增“疑似降级”标记。');
+  await expect(notice.locator('.announcement-releases li').first()).toContainText('修复新建会话');
+  await expect(notice.locator('.announcement-releases li').nth(1)).toContainText('新增“疑似降级”标记。');
   await expect(notice.locator('#notice-history-title')).toHaveCSS('color', 'rgb(178, 244, 91)');
   await notice.screenshot({ path: path.join(root, 'output/playwright/announcement-108-zh.png'), fullPage: true });
   await notice.getByRole('button', { name: 'EN', exact: true }).click();
@@ -306,7 +322,7 @@ test('anchors the yellow suspected-downgrade hint to the status in live and relo
   await expect(notice.locator('.announcement-points > li').first()).toContainText('about 80% reported no downgrade');
   await expect(notice.locator('#notice-poll')).toHaveText('poll');
   await expect(notice.locator('.announcement-footnote')).toContainText('For image-only generation tasks');
-  await expect(notice.locator('.announcement-releases li')).toHaveCount(8);
+  await expect(notice.locator('.announcement-releases li')).toHaveCount(9);
   await expect(notice.locator('.announcement-points > li').nth(1)).toContainText('Work mode');
   await notice.screenshot({ path: path.join(root, 'output/playwright/announcement-108-en.png'), fullPage: true });
   await notice.setViewportSize({ width: 375, height: 800 });

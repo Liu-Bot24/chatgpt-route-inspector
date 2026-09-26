@@ -1,6 +1,6 @@
 import type { UiLanguage } from '../../core/types';
 import type { RuntimeRequest, RuntimeResponse } from '../../shared/messages';
-import { UPGRADE_NOTICE_PAGE } from '../../shared/upgrade-notice';
+import { UPGRADE_NOTICE_URL } from '../../shared/upgrade-notice';
 import { t } from './i18n';
 
 export const suspectedDowngradeHintStyles = `
@@ -22,7 +22,7 @@ export function suspectedDowngradeHintMarkup(language: UiLanguage, url: string):
 }
 
 export function currentSuspectedDowngradeHint(language: UiLanguage): string {
-  return suspectedDowngradeHintMarkup(language, chrome.runtime.getURL(UPGRADE_NOTICE_PAGE));
+  return suspectedDowngradeHintMarkup(language, UPGRADE_NOTICE_URL);
 }
 
 export function bindSuspectedDowngradeHint(root: ShadowRoot): void {
@@ -40,7 +40,7 @@ export function bindSuspectedDowngradeHint(root: ShadowRoot): void {
   root.getElementById('suspect-trigger')?.addEventListener('click', () => hint.removeAttribute('data-dismissed'));
   root.getElementById('suspect-link')?.addEventListener('click', async (event) => {
     event.preventDefault();
-    // Content pages cannot navigate directly to a private extension page.
+    // Keep opening and failure reporting consistent with other extension actions.
     try {
       const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({ type: 'route:open-announcement' });
       if (!response.ok) throw new Error(response.error);

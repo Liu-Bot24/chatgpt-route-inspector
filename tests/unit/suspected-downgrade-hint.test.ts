@@ -4,7 +4,7 @@ import {
   currentSuspectedDowngradeHint,
   suspectedDowngradeHintMarkup
 } from '../../src/ui/shared/suspected-downgrade-hint';
-import { UPGRADE_NOTICE_PAGE } from '../../src/shared/upgrade-notice';
+import { UPGRADE_NOTICE_URL } from '../../src/shared/upgrade-notice';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -27,7 +27,7 @@ it.each(['throw', 'reject', 'not-ok', 'ok'])('reports announcement open failures
 });
 
 it.each(['zh', 'en'] as const)('anchors the tooltip to the suspected-downgrade label in %s', (language) => {
-  const url = `chrome-extension://example/${UPGRADE_NOTICE_PAGE}`;
+  const url = UPGRADE_NOTICE_URL;
   const html = suspectedDowngradeHintMarkup(language, url);
   expect(html).toContain('id="suspect-trigger"');
   expect(html).toContain('aria-controls="suspect-popover"');
@@ -40,9 +40,10 @@ it.each(['zh', 'en'] as const)('anchors the tooltip to the suspected-downgrade l
   else expect(html).not.toMatch(/[\u4e00-\u9fff]/);
 });
 
-it('uses the packaged 1.0.8 announcement URL', () => {
+it('uses the public notice URL without requesting extension URL access', () => {
   const getURL = vi.fn((page: string) => `chrome-extension://example/${page}`);
   vi.stubGlobal('chrome', { runtime: { getManifest: () => ({ version: '1.0.8' }), getURL } });
   expect(currentSuspectedDowngradeHint('zh')).toContain('疑似降级');
-  expect(getURL).toHaveBeenCalledWith(UPGRADE_NOTICE_PAGE);
+  expect(currentSuspectedDowngradeHint('zh')).toContain(`href="${UPGRADE_NOTICE_URL}"`);
+  expect(getURL).not.toHaveBeenCalled();
 });

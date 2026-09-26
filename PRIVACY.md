@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Effective date: August 11, 2026
+Effective date: September 27, 2026
 
 ChatGPT Route Inspector (the “Extension”) is a local model-route inspection tool for Chromium browsers. This policy explains how the Extension handles data.
 
@@ -50,6 +50,8 @@ Users can clear local records from the Settings & Privacy page. Chrome removes t
 ## Data transmission and exports
 
 The Extension does not automatically transmit inspection data to the developer or any third-party server. If a user clicks an author, GitHub, or other external link, the browser opens that website through normal navigation.
+
+When upgrading to version 1.0.9, the Extension opens the public version announcement at `https://rinotice.liu-qi.cn/` once. Users can also open this page from announcement links in the Extension. This is ordinary website navigation: the hosting server receives the browser's IP address and standard HTTP request headers, but the Extension does not attach inspection records, ChatGPT conversation identifiers, or conversation content. The announcement page contains no analytics or user-tracking code and cannot access the Extension's local records.
 
 Copying a summary, exporting JSON, or exporting a report requires an explicit user action. Exports contain routing-diagnostic fields only. Request identifiers are redacted by default and are included in full only when the user explicitly enables that setting.
 

@@ -7,7 +7,7 @@ import { normalizeObservation } from '../core/observation';
 import type { InspectorState, PowObservation, RouteObservation } from '../core/types';
 import type { RuntimeRequest, RuntimeResponse } from '../shared/messages';
 import { handleInstallation } from './upgrade-notice';
-import { UPGRADE_NOTICE_PAGE, UPGRADE_NOTICE_VERSION } from '../shared/upgrade-notice';
+import { UPGRADE_NOTICE_URL } from '../shared/upgrade-notice';
 
 const allowedOrigins = new Set(__ROUTE_INSPECTOR_ALLOWED_ORIGINS__);
 const badgeTexts = new Map<number, string>();
@@ -186,10 +186,7 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse: (respo
       return { ok: true };
     }
     if (request.type === 'route:open-announcement') {
-      if (chrome.runtime.getManifest().version !== UPGRADE_NOTICE_VERSION) {
-        return { ok: false, error: 'This version notice is no longer available.' };
-      }
-      await chrome.tabs.create({ url: chrome.runtime.getURL(UPGRADE_NOTICE_PAGE) });
+      await chrome.tabs.create({ url: UPGRADE_NOTICE_URL });
       return { ok: true };
     }
     return { ok: false, error: '未知请求。' };

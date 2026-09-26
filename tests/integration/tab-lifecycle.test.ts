@@ -17,7 +17,7 @@ async function background() {
     } },
     action: { setBadgeText: async (value: { text: string }) => { badge = value.text; }, setBadgeBackgroundColor: vi.fn() },
     runtime: { onInstalled: { addListener: vi.fn() }, sendMessage: vi.fn(), onMessage: { addListener: (fn: typeof receive) => { receive = fn; } } },
-    tabs: { query: async () => [structuredClone(tab)], get: vi.fn(async () => structuredClone(tab)), sendMessage: vi.fn(),
+    tabs: { create: vi.fn(async () => ({ id: 9 })), query: async () => [structuredClone(tab)], get: vi.fn(async () => structuredClone(tab)), sendMessage: vi.fn(),
       onRemoved: { addListener: vi.fn() }, onUpdated: { addListener: (fn: typeof navigate) => { navigate = fn; } } }
   };
   vi.stubGlobal('chrome', api);
@@ -45,6 +45,15 @@ async function background() {
     }
   };
 }
+
+it('opens only the fixed public notice URL without forwarding request data', async () => {
+  const b = await background();
+  const response = await b.send({ type: 'route:open-announcement' }, true);
+  expect(response.ok).toBe(true);
+  expect(b.api.tabs.create).toHaveBeenCalledExactlyOnceWith({ url: 'https://rinotice.liu-qi.cn/' });
+  b.api.tabs.create.mockRejectedValueOnce(new Error('Tab unavailable'));
+  expect(await b.send({ type: 'route:open-announcement' }, true)).toMatchObject({ ok: false, error: 'Tab unavailable' });
+});
 
 it.each(['https://example.org/', undefined])('C1: leaving the supported site clears display, not history (%s)', async (url) => {
   const b = await background();
