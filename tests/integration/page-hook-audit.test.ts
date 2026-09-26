@@ -406,6 +406,46 @@ it('F5: identity-only updates preserve the original model and do not create a re
   expect(latestInContext(state, 1, 'reload')).toBeNull();
 });
 
+it.each(['before-local', 'during-local', 'after-local'])('keeps live capture visible across temporary creation URL (identity %s)', async (order) => {
+  const { upsertTurn } = await import('../../src/core/turns');
+  const { latestInContext } = await import('../../src/core/capture-context');
+  const { DEFAULT_SETTINGS } = await import('../../src/core/types');
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const capture = await hook(new Response(new ReadableStream<Uint8Array>({ start(c) { stream = c; } }), {
+    headers: { 'content-type': 'text/event-stream' }
+  }), '/');
+  const send = (value: unknown) => stream.enqueue(new TextEncoder().encode(event(value)));
+  await capture.request(undefined, { model: 'gpt-5-6-thinking', conversation_id: null, messages: [{ id: 'new-input' }] });
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.phase).toBe('requested'));
+  const current = (mode: 'live' | 'reload') => latestInContext({ settings: DEFAULT_SETTINGS,
+    turns: capture.observations.reduce((turns, o) => upsertTurn(turns, { ...o, tabId: 1 }), [] as RouteTurn[]),
+    powReadings: [], captureContexts: { 1: capture.contexts.at(-1)! },
+    parserHealth: { lastSuccessAt: null, lastFailureAt: null, consecutiveFailures: 0 } }, 1, mode);
+  const identity = async () => {
+    send({ conversation_id: 'new-conversation' });
+    await vi.waitFor(() => expect(capture.observations.at(-1)?.conversationId).toBe('new-conversation'));
+  };
+  if (order === 'before-local') await identity();
+  capture.navigate('/c/local-chatgpt%3Adraft');
+  expect(current('live')?.requestedModel).toBe('gpt-5-6-thinking');
+  expect(current('reload')).toBeNull();
+  if (order === 'during-local') await identity();
+  capture.navigate('/c/new-conversation');
+  if (order === 'after-local') await identity();
+  send({ resolved_model_slug: 'gpt-5-6-thinking' });
+  stream.close();
+  await vi.waitFor(() => expect(capture.observations.at(-1)?.phase).toBe('completed'));
+  expect(current('live')).toMatchObject({ requestedModel: 'gpt-5-6-thinking', resolvedModelSlug: 'gpt-5-6-thinking' });
+  expect(current('reload')).toBeNull();
+  // Creation readback is not a separate user reload.
+  capture.nativeFetch.mockResolvedValueOnce(record('readback-route'));
+  await capture.fetch('/backend-api/conversation/new-conversation');
+  await settle();
+  expect(current('reload')).toBeNull();
+  capture.navigate('/c/unrelated');
+  expect(current('live')).toBeNull();
+});
+
 it('captures live requests while the reload tab is selected', async () => {
   const capture = await hook(sse(event({ resolved_model_slug: 'gpt-live' }) + 'data: [DONE]\n\n'));
   capture.control({ captureMode: 'reload' });

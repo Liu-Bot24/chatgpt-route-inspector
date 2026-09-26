@@ -1,4 +1,4 @@
-import { conversationIdFromPathname } from './chatgpt-path';
+import { conversationIdFromPathname, temporaryConversationIdFromPathname } from './chatgpt-path';
 import type { CaptureContext, CaptureMode, InspectorState, RouteTurn } from './types';
 
 export function contextConversation(context: CaptureContext): string | null {
@@ -20,8 +20,17 @@ export class CaptureContextTracker {
   navigate(pageUrl: string): CaptureContext {
     if (pageUrl === this.current.pageUrl) return this.snapshot();
     const old = this.current;
-    const conversation = conversationIdFromPathname(new URL(pageUrl).pathname);
+    const pathname = new URL(pageUrl).pathname;
+    const conversation = conversationIdFromPathname(pathname);
     const creating = !contextConversation(old) && !old.reloadEligible && this.liveStarted;
+    const temporary = temporaryConversationIdFromPathname(pathname);
+    const oldTemporary = temporaryConversationIdFromPathname(new URL(old.pageUrl).pathname);
+    // ChatGPT creates a local URL before replacing it with the server identity.
+    // Keep this one creation chain, but never join two different local drafts.
+    if (creating && temporary && (!oldTemporary || oldTemporary === temporary)) {
+      this.current = { ...old, pageUrl, revision: old.revision + 1 };
+      return this.snapshot();
+    }
     const promoted = creating && conversation !== null && conversation === this.assignedConversation;
     const unresolvedCreation = creating && conversation !== null && this.assignedConversation === null;
     this.previousCreation = unresolvedCreation ? old : null;
@@ -65,6 +74,10 @@ export class CaptureContextTracker {
 
   stopFallback(): void {
     this.previousCreation = null;
+    if (!contextConversation(this.current)) {
+      this.liveStarted = false;
+      this.assignedConversation = null;
+    }
     this.current = { ...this.current, reloadEligible: false, revision: this.current.revision + 1 };
   }
 

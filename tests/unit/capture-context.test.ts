@@ -98,6 +98,37 @@ it('does not promote an unrelated route or revive a creation after another navig
   expect(tracker.snapshot().id).not.toBe(original.id);
 });
 
+it.each(['before-local', 'during-local', 'after-local'])('retains creation across a local URL with identity %s', (order) => {
+  const tracker = new CaptureContextTracker('https://chatgpt.com/');
+  const initial = tracker.startLive();
+  if (order === 'before-local') tracker.observeLive(initial.id, 'new');
+  const local = tracker.navigate(url('local-chatgpt%3Adraft'));
+  expect(local.id).toBe(initial.id);
+  expect(local.visitStartedAt).toBe(initial.visitStartedAt);
+  expect(local.reloadEligible).toBe(false);
+  expect(tracker.canStartReload()).toBe(false);
+  if (order === 'during-local') tracker.observeLive(initial.id, 'new');
+  tracker.navigate(url('new'));
+  if (order === 'after-local') tracker.observeLive(initial.id, 'new');
+  expect(tracker.snapshot().id).toBe(initial.id);
+  expect(tracker.snapshot().reloadEligible).toBe(false);
+});
+
+it.each(['other-local', 'other-chat', 'back-home', 'clear', 'pause'])('does not carry a local creation across %s', (action) => {
+  const tracker = new CaptureContextTracker('https://chatgpt.com/');
+  const initial = tracker.startLive();
+  tracker.navigate(url('local-chatgpt%3Adraft'));
+  if (action === 'other-local') tracker.navigate(url('local-chatgpt%3Aanother'));
+  if (action === 'other-chat') tracker.navigate(url('unrelated'));
+  if (action === 'back-home') tracker.navigate('https://chatgpt.com/');
+  if (action === 'clear') tracker.clearBefore(Date.now());
+  if (action === 'pause') tracker.stopFallback();
+  tracker.observeLive(initial.id, 'new');
+  tracker.navigate(url('new'));
+  tracker.observeLive(initial.id, 'new');
+  expect(tracker.snapshot().id).not.toBe(initial.id);
+});
+
 it('allows new network loads while an unconfirmed creation keeps DOM fallback closed', () => {
   const tracker = new CaptureContextTracker('https://chatgpt.com/');
   const original = tracker.startLive();

@@ -26,6 +26,26 @@ let renderedSignature = '';
 let captureGeneration = 0;
 let waitingObservations = 0;
 const MAX_STARTUP_OBSERVATIONS = 128;
+let runtimeDisconnected = false;
+let disconnectedDismissed = false;
+
+async function sendToRuntime(request: RuntimeRequest): Promise<RuntimeResponse> {
+  try {
+    if (runtimeDisconnected || typeof chrome === 'undefined' || typeof chrome.runtime?.sendMessage !== 'function') {
+      throw new Error('Extension context invalidated.');
+    }
+    return await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>(request);
+  } catch (error) {
+    if (!runtimeDisconnected && error instanceof Error && /extension context invalidated/i.test(error.message)) {
+      runtimeDisconnected = true;
+      captureGeneration++;
+      pendingContext = null;
+      if (scanTimer !== null) { window.clearTimeout(scanTimer); scanTimer = null; }
+      render();
+    }
+    throw error;
+  }
+}
 
 function trackDomNodes(blocked = state?.settings.autoCaptureEnabled === false): HTMLElement[] {
   if (domPathname !== location.pathname) {
@@ -61,6 +81,7 @@ function publishCaptureControl(): void {
 }
 
 function acceptState(next: InspectorState): boolean {
+  if (runtimeDisconnected) return false;
   if (isStaleState(state, next)) return false;
   if (!next.settings.autoCaptureEnabled) captureGeneration++;
   // Stamp nodes while the old paused state still applies, including mutations queued at resume.
@@ -80,9 +101,9 @@ function acceptState(next: InspectorState): boolean {
 
 let stateRetryDelay = 250;
 async function initializeState(): Promise<void> {
-  while (true) {
+  while (!runtimeDisconnected) {
     try {
-      const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({ type: 'route:get-state' });
+      const response = await sendToRuntime({ type: 'route:get-state' });
       if (response.ok && response.state && Number.isInteger(response.tabId)) {
         ownTabId = response.tabId!;
         acceptState(response.state);
@@ -92,24 +113,25 @@ async function initializeState(): Promise<void> {
     } catch {
       // Keep readiness pending until a retry establishes both settings and tab scope.
     }
+    if (runtimeDisconnected) return;
     await new Promise<void>((resolve) => window.setTimeout(resolve, stateRetryDelay));
     stateRetryDelay = Math.min(stateRetryDelay * 2, 5000);
   }
 }
-const stateReady = initializeState();
-
 let pendingContext: CaptureContext | null = null;
 let contextSyncRunning = false;
 let contextRetryScheduled = false;
 let contextRetryDelay = 250;
+const stateReady = initializeState();
 
 async function syncContext(): Promise<void> {
-  if (contextSyncRunning || !pendingContext) return;
+  if (runtimeDisconnected || contextSyncRunning || !pendingContext) return;
   contextSyncRunning = true;
   await stateReady;
+  if (runtimeDisconnected || !pendingContext) { contextSyncRunning = false; return; }
   const next = pendingContext;
   try {
-    const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({ type: 'route:context', context: next });
+    const response = await sendToRuntime({ type: 'route:context', context: next });
     if (response.ok) {
       if (pendingContext === next) pendingContext = null;
       contextRetryDelay = 250;
@@ -119,7 +141,7 @@ async function syncContext(): Promise<void> {
     // Retain the latest context until the background worker acknowledges it.
   } finally {
     contextSyncRunning = false;
-    if (pendingContext && !contextRetryScheduled) {
+    if (!runtimeDisconnected && pendingContext && !contextRetryScheduled) {
       contextRetryScheduled = true;
       window.setTimeout(() => {
         contextRetryScheduled = false;
@@ -182,7 +204,7 @@ function hasCurrentDocumentConversationRecord(): boolean {
 }
 
 async function scanReloadDom(): Promise<void> {
-  if (!captureContext?.reloadEligible || scanRunning || !state?.settings.autoCaptureEnabled ||
+  if (runtimeDisconnected || !captureContext?.reloadEligible || scanRunning || !state?.settings.autoCaptureEnabled ||
     captureContext.pageUrl !== `${location.origin}${location.pathname}`) return;
   if (hasCurrentDocumentConversationRecord()) return;
   const context = captureContext;
@@ -193,7 +215,7 @@ async function scanReloadDom(): Promise<void> {
     if (!conversationId) return;
     const nodes = trackDomNodes();
     for (const [index, node] of nodes.entries()) {
-      if (location.pathname !== pathname || captureContext?.id !== context.id || !captureContext.reloadEligible || !state?.settings.autoCaptureEnabled) break;
+      if (runtimeDisconnected || location.pathname !== pathname || captureContext?.id !== context.id || !captureContext.reloadEligible || !state?.settings.autoCaptureEnabled) break;
       const identity = nodeIdentities.get(node);
       if (!node.isConnected || identity?.pathname !== pathname || identity.contextId !== context.id || identity.blocked ||
         identity.observedAt <= Date.parse(state.clearedAt ?? '')) continue;
@@ -205,7 +227,7 @@ async function scanReloadDom(): Promise<void> {
 
       const observedAt = new Date().toISOString();
       try {
-        const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({
+        const response = await sendToRuntime({
           type: 'route:observation',
           observation: {
             captureId: crypto.randomUUID(),
@@ -237,27 +259,29 @@ async function scanReloadDom(): Promise<void> {
 }
 
 function scheduleReloadDomScan(): void {
-  if (scanTimer !== null) return;
+  if (runtimeDisconnected || scanTimer !== null) return;
   scanTimer = window.setTimeout(() => {
     scanTimer = null;
     void scanReloadDom();
   }, DOM_FALLBACK_DELAY_MS);
 }
 
-async function updateSettings(settings: Partial<InspectorState['settings']>): Promise<void> {
-  const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({
-    type: 'route:update-settings',
-    settings
-  });
-  if (!response.ok) {
-    window.alert(response.error ?? 'Unable to update extension settings.');
-    return;
+async function runAction(request: RuntimeRequest): Promise<void> {
+  try {
+    const response = await sendToRuntime(request);
+    if (!response.ok) throw new Error(response.error ?? 'Extension action failed.');
+    if (response.state) acceptState(response.state);
+  } catch {
+    if (!runtimeDisconnected) window.alert(t(state?.settings.uiLanguage ?? 'en', 'overlay.actionFailed'));
   }
-  if (response.state) acceptState(response.state);
+}
+
+function updateSettings(settings: Partial<InspectorState['settings']>): Promise<void> {
+  return runAction({ type: 'route:update-settings', settings });
 }
 
 function render(): void {
-  if (!state?.settings.overlayEnabled) {
+  if (!state?.settings.overlayEnabled || disconnectedDismissed) {
     host?.remove();
     host = null;
     renderedSignature = '';
@@ -273,6 +297,15 @@ function render(): void {
   const root = host.shadowRoot;
   if (!root) return;
   const language = state.settings.uiLanguage;
+  if (runtimeDisconnected) {
+    if (renderedSignature === 'disconnected') return;
+    renderedSignature = 'disconnected';
+    root.innerHTML = `<style>:host{all:initial}.disconnected{position:fixed;right:18px;bottom:18px;z-index:2147483647;box-sizing:border-box;width:356px;max-width:calc(100vw - 36px);padding:16px;border:1px solid #efb55d;background:#10130f;color:#f3f5ec;font:14px/1.5 sans-serif;box-shadow:0 12px 40px #0006}.disconnected p{margin:8px 0 12px}.disconnected button{margin-right:8px;padding:7px 10px;border:1px solid #697461;background:#171b16;color:#f3f5ec;cursor:pointer}.disconnected button:focus-visible{outline:2px solid #a9f04d}</style>
+      <section class="disconnected" role="status"><strong>ROUTE INSPECTOR</strong><p>${escapeHtml(t(language, 'overlay.disconnected'))}</p><button id="reconnect">${escapeHtml(t(language, 'overlay.refreshPage'))}</button><button id="dismiss-disconnected">${escapeHtml(t(language, 'overlay.hide'))}</button></section>`;
+    root.getElementById('reconnect')?.addEventListener('click', () => location.reload());
+    root.getElementById('dismiss-disconnected')?.addEventListener('click', () => { disconnectedDismissed = true; render(); });
+    return;
+  }
   const mode = state.settings.captureMode;
   const overlayMode = state.settings.overlayMode ?? (state.settings.overlayMinimized ? 'compact' : 'full');
   const turn = currentTurn();
@@ -432,11 +465,12 @@ function render(): void {
   root.getElementById('expand')?.addEventListener('click', () => void updateSettings({ overlayMode: 'full', overlayMinimized: false }));
   root.getElementById('hide')?.addEventListener('click', () => void updateSettings({ overlayEnabled: false }));
   root.getElementById('dashboard')?.addEventListener('click', () => {
-    void chrome.runtime.sendMessage<RuntimeRequest>({ type: 'route:open-dashboard' });
+    void runAction({ type: 'route:open-dashboard' });
   });
 }
 
 window.addEventListener('message', (event: MessageEvent<unknown>) => {
+  if (runtimeDisconnected) return;
   if (event.source === window && event.origin === location.origin &&
     (event.data as { source?: string } | null)?.source === 'chatgpt-route-inspector-context') {
     const next = normalizeCaptureContext((event.data as { context?: unknown }).context);
@@ -462,16 +496,16 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   const generation = captureGeneration;
   waitingObservations++;
   void stateReady.then(async () => {
-    if (generation !== captureGeneration || !state?.settings.autoCaptureEnabled || ownTabId === null) return;
+    if (runtimeDisconnected || generation !== captureGeneration || !state?.settings.autoCaptureEnabled || ownTabId === null) return;
     if ('pow' in envelope) {
-      const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({
+      const response = await sendToRuntime({
         type: 'pow:observation',
         observation: envelope.pow
       });
       if (response.ok && response.state) acceptState(response.state);
       return;
     }
-    const response = await chrome.runtime.sendMessage<RuntimeRequest, RuntimeResponse>({
+    const response = await sendToRuntime({
       type: 'route:observation',
       observation: envelope.observation
     });

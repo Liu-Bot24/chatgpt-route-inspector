@@ -20,11 +20,14 @@ async function bridge(failInitialState: false | 'throw' | 'reject' | 'missing-ta
   if (failInitialState === 'throw') send.mockRejectedValueOnce(new Error('worker restarting'));
   if (failInitialState === 'reject') send.mockResolvedValueOnce({ ok: false, state, tabId: 1 });
   if (failInitialState === 'missing-tab') send.mockResolvedValueOnce({ ok: true, state, tabId: undefined as never });
-  const windowMock = { postMessage: vi.fn(), addEventListener: vi.fn((name, fn) => listeners.set(name, fn)), setTimeout };
+  const windowMock = { postMessage: vi.fn(), addEventListener: vi.fn((name, fn) => listeners.set(name, fn)), setTimeout, clearTimeout };
   vi.stubGlobal('window', windowMock);
   vi.stubGlobal('location', { origin: 'https://chatgpt.com', pathname: '/c/a' });
-  const root = { innerHTML: '', getElementById: () => null };
-  const host = { id: '', isConnected: true, shadowRoot: root, attachShadow: () => root };
+  const clicks = new Map<string, () => unknown>();
+  const root = { innerHTML: '', getElementById: (id: string) => ({ addEventListener: (type: string, fn: () => unknown) => {
+    if (type === 'click') clicks.set(id, fn);
+  } }) };
+  const host = { id: '', isConnected: true, shadowRoot: root, attachShadow: () => root, remove: vi.fn() };
   vi.stubGlobal('document', { documentElement: { append: vi.fn() }, querySelectorAll: () => nodes, createElement: () => host });
   let mutation!: MutationCallback;
   vi.stubGlobal('MutationObserver', class { constructor(callback: MutationCallback) { mutation = callback; } observe() {} });
@@ -35,7 +38,7 @@ async function bridge(failInitialState: false | 'throw' | 'reject' | 'missing-ta
   const context: CaptureContext = { id: 'visit-1', documentId: 'doc-1', documentStartedAt: 1, visitStartedAt: 1,
     pageUrl: 'https://chatgpt.com/c/a', revision: 0, reloadEligible: true };
   return {
-    send, context, nodes, root, mutate: () => mutation([], {} as MutationObserver),
+    send, context, nodes, root, host, click: (id: string) => clicks.get(id)?.(), mutate: () => mutation([], {} as MutationObserver),
     observe: () => listeners.get('message')?.({ source: windowMock, origin: 'https://chatgpt.com', data: {
       source: 'chatgpt-route-inspector', version: 1, observation: {
         captureId: 'startup', source: 'page_fetch', captureMode: 'live', phase: 'completed',
@@ -227,4 +230,44 @@ it('R3: retries only the newest context after navigation during a failed sync', 
   await vi.advanceTimersByTimeAsync(6000);
   expect(capture.contexts().at(-1)?.[0]).toEqual({ type: 'route:context', context: next });
   expect(capture.contexts().slice(1).every(([r]) => r.type === 'route:context' && r.context.revision === 1)).toBe(true);
+});
+
+it.each(['missing-runtime', 'invalidated'] as const)('shows a refresh notice instead of dead controls when the extension is %s', async (failure) => {
+  const capture = await bridge();
+  capture.receive(capture.context);
+  capture.showLive();
+  await vi.advanceTimersByTimeAsync(1);
+  if (failure === 'missing-runtime') Reflect.deleteProperty(chrome, 'runtime');
+  else capture.send.mockRejectedValue(new Error('Extension context invalidated.'));
+  capture.click('compact');
+  await vi.advanceTimersByTimeAsync(1);
+  expect(capture.root.innerHTML).toContain('id="reconnect"');
+  expect(capture.root.innerHTML).not.toContain('recovered-route');
+  const calls = capture.send.mock.calls.length;
+  capture.observe();
+  capture.receive({ ...capture.context, revision: 2 });
+  capture.mutate();
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(capture.send).toHaveBeenCalledTimes(calls);
+  capture.click('dismiss-disconnected');
+  expect(capture.host.remove).toHaveBeenCalled();
+  capture.mutate();
+  expect(capture.send).toHaveBeenCalledTimes(calls);
+});
+
+it('keeps normal controls usable after a transient worker failure', async () => {
+  const capture = await bridge();
+  capture.receive(capture.context);
+  capture.showLive();
+  await vi.advanceTimersByTimeAsync(1);
+  const alert = vi.fn();
+  Object.assign(window, { alert });
+  capture.send.mockRejectedValueOnce(new Error('worker restarting'));
+  capture.click('dashboard');
+  await vi.advanceTimersByTimeAsync(1);
+  expect(alert).toHaveBeenCalledOnce();
+  expect(capture.root.innerHTML).not.toContain('id="reconnect"');
+  capture.click('dashboard');
+  await vi.advanceTimersByTimeAsync(1);
+  expect(capture.send.mock.calls.at(-1)?.[0]).toEqual({ type: 'route:open-dashboard' });
 });

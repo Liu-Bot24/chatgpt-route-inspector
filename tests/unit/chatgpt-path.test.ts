@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { conversationIdFromPathname, redactConversationPathname } from '../../src/core/chatgpt-path';
+import { conversationIdFromPathname, redactConversationPathname, temporaryConversationIdFromPathname } from '../../src/core/chatgpt-path';
 
 describe('ChatGPT conversation paths', () => {
   it('extracts conversation ids from standard and project conversations', () => {
@@ -11,6 +11,17 @@ describe('ChatGPT conversation paths', () => {
     expect(conversationIdFromPathname('/g/g-p-project')).toBeNull();
     expect(conversationIdFromPathname('/backend-api/conversation/private-id')).toBeNull();
     expect(conversationIdFromPathname('/g/g-p-project/c/%')).toBeNull();
+  });
+
+  it('distinguishes local creation URLs from server conversation identities', () => {
+    for (const prefix of ['/c/', '/g/g-p-project/c/']) {
+      expect(conversationIdFromPathname(`${prefix}local-chatgpt%3Adraft`)).toBeNull();
+      expect(temporaryConversationIdFromPathname(`${prefix}local-chatgpt%3Adraft`)).toBe('local-chatgpt:draft');
+      expect(temporaryConversationIdFromPathname(`${prefix}local-chatgpt:draft`)).toBe('local-chatgpt:draft');
+    }
+    expect(temporaryConversationIdFromPathname('/c/server-id')).toBeNull();
+    expect(temporaryConversationIdFromPathname('/c/local-chatgpt%3A')).toBeNull();
+    expect(temporaryConversationIdFromPathname('/c/%')).toBeNull();
   });
 
   it('redacts both conversation and project identifiers', () => {
