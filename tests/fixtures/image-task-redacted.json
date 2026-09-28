@@ -1,0 +1,108 @@
+{
+  "requestedModel": "gpt-5-6-thinking",
+  "reload": {
+    "conversation_id": "id-1",
+    "current_node": "id-2",
+    "messages": [
+      {
+        "id": "id-5",
+        "author": {
+          "role": "system",
+          "name": null
+        },
+        "recipient": "all",
+        "metadata": {
+          "request_id": "id-3",
+          "working_turn_id": "id-4",
+          "turn_exchange_id": "id-4"
+        },
+        "content": {
+          "content_type": "text"
+        }
+      },
+      {
+        "id": "id-6",
+        "author": {
+          "role": "user",
+          "name": null
+        },
+        "recipient": "all",
+        "metadata": {
+          "request_id": "id-3",
+          "working_turn_id": "id-4",
+          "turn_exchange_id": "id-4"
+        },
+        "content": {
+          "content_type": "text"
+        }
+      },
+      {
+        "id": "id-7",
+        "author": {
+          "role": "tool",
+          "name": "t2uay3k.sj1i4kz"
+        },
+        "recipient": "all",
+        "metadata": {
+          "parent_id": "id-6",
+          "working_turn_id": "id-4",
+          "turn_exchange_id": "id-4",
+          "image_gen_title": "Test image"
+        },
+        "content": {
+          "content_type": "multimodal_text"
+        }
+      },
+      {
+        "id": "id-2",
+        "author": {
+          "role": "assistant",
+          "name": null
+        },
+        "recipient": "all",
+        "metadata": {
+          "parent_id": "id-8",
+          "request_id": "id-9",
+          "working_turn_id": "id-4",
+          "turn_exchange_id": "id-4",
+          "resolved_model_slug": "gpt-5-4-auto-thinking",
+          "model_slug": "gpt-5-4-auto-thinking",
+          "requested_model_slug": "gpt-5-4-auto-thinking",
+          "default_model_slug": "gpt-5-6-thinking",
+          "thinking_effort": "max"
+        },
+        "content": {
+          "content_type": "reasoning_recap"
+        }
+      }
+    ]
+  },
+  "live": {
+    "type": "conversation-update",
+    "payload": {
+      "conversation_id": "id-1",
+      "update_type": "add-messages",
+      "update_content": {
+        "messages": [
+          {
+            "id": "id-7",
+            "author": {
+              "role": "tool",
+              "name": "t2uay3k.sj1i4kz"
+            },
+            "recipient": "all",
+            "metadata": {
+              "parent_id": "id-6",
+              "working_turn_id": "id-4",
+              "turn_exchange_id": "id-4",
+              "image_gen_title": "Test image"
+            },
+            "content": {
+              "content_type": "multimodal_text"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

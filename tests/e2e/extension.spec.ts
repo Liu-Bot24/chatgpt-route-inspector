@@ -165,7 +165,8 @@ test.beforeAll(async () => {
       '/': { file: 'index.html', contentType: 'text/html; charset=utf-8' },
       '/notice.js': { file: 'notice.js', contentType: 'application/javascript' },
       '/ui/shared/styles.css': { file: 'ui/shared/styles.css', contentType: 'text/css' },
-      '/icons/icon-48.png': { file: 'icons/icon-48.png', contentType: 'image/png' }
+      '/icons/icon-48.png': { file: 'icons/icon-48.png', contentType: 'image/png' },
+      '/icons/x-logo.svg': { file: 'icons/x-logo.svg', contentType: 'image/svg+xml' }
     };
     const asset = files[pathname];
     if (!asset) { await route.fulfill({ status: 404, body: '' }); return; }
@@ -287,7 +288,7 @@ test('anchors the yellow suspected-downgrade hint to the status in live and relo
   await expect(link).not.toBeVisible();
   await trigger.hover();
   await expect(link).toBeVisible();
-  await expect(link).toContainText('响应来源字段缺失 resolved_model_slug，根据调研统计，约 80% 可能发生降级（生图例外）。 查看详情');
+  await expect(link).toContainText('响应来源字段缺失 resolved_model_slug，根据调研统计，约 80% 可能发生降级。 查看详情');
   const start = (await trigger.boundingBox())!;
   const end = (await link.locator('strong').boundingBox())!;
   const from = { x: start.x + start.width / 2, y: start.y + start.height / 2 };
@@ -337,7 +338,7 @@ test('anchors the yellow suspected-downgrade hint to the status in live and relo
   await settings.evaluate(async () => chrome.runtime.sendMessage({ type: 'route:update-settings', settings: { uiLanguage: 'en' } }));
   await expect(trigger).toHaveText('Possible downgrade');
   await trigger.hover();
-  await expect(link).toContainText('When the response lacks resolved_model_slug, the survey suggests an approximately 80% chance of downgrade (image generation excepted). View details');
+  await expect(link).toContainText('When the response lacks resolved_model_slug, the survey suggests an approximately 80% chance of downgrade. View details');
   await page.setViewportSize({ width: 375, height: 800 });
   await trigger.hover();
   await expect(link).toBeVisible();

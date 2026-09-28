@@ -5,6 +5,19 @@ import { parseWebSocketFrame, WebSocketRouteParser } from '../../src/core/websoc
 const frame = readFileSync(new URL('../fixtures/websocket-route-frame.json', import.meta.url), 'utf8');
 
 describe('WebSocket route parser', () => {
+  it('projects stream task identities without retaining bodies, user messages or nested reports', () => {
+    const message = { id: 'assistant', author: { role: 'assistant' }, metadata: {
+      parent_id: 'user', working_turn_id: 'turn', turn_exchange_id: 'exchange',
+      chatgpt_sdk: { widget_state: { report_message: { id: 'report', author: { role: 'assistant' } } } }
+    }, content: { parts: ['PRIVATE_BODY'] } };
+    const raw = JSON.stringify([{ topic_id: 'topic', payload: { payload: { encoded_item:
+      `data: ${JSON.stringify({ messages: [{ id: 'user', author: { role: 'user' } }, message] })}\n\n`
+    } } }]);
+    const result = parseWebSocketFrame(raw)[0]!;
+    expect(result.taskIdentities).toEqual([{ messageId: 'assistant', parentId: 'user', workingTurnId: 'turn', exchangeId: 'exchange' }]);
+    expect(JSON.stringify(result.taskIdentities)).not.toMatch(/PRIVATE_BODY|report_message/);
+  });
+
   it('keeps delta state across frames and isolates interleaved topics', () => {
     const parser = new WebSocketRouteParser();
     const frame = (topic: string, data: string) => JSON.stringify([{ topic_id: topic, payload: { payload: { encoded_item: data } } }]);
@@ -16,13 +29,16 @@ describe('WebSocket route parser', () => {
     const patch = 'event: delta\ndata: {"p":"/message/metadata/model_slug","o":"add","v":"gpt-6-pro"}\n\n';
     expect(parser.parse(frame('user-topic', patch))[0]?.fields.responseModelSlug).toBeNull();
     expect(parser.parse(frame('assistant-topic', patch))[0]).toMatchObject({
-      fields: { responseModelSlug: 'gpt-6-pro' }, messageIds: ['assistant-delta'], parentIds: ['input-delta']
+      fields: { responseModelSlug: 'gpt-6-pro' }, messageIds: ['assistant-delta'], parentIds: ['input-delta'],
+      taskIdentities: [{ messageId: 'assistant-delta', parentId: 'input-delta', workingTurnId: null, exchangeId: null }]
     });
     // Server metadata can precede the final patches, so it must not discard the delta context.
     parser.parse(frame('assistant-topic', 'data: {"type":"server_ste_metadata","metadata":{"model_slug":"gpt-6-pro"}}\n\n'));
     expect(parser.parse(frame('assistant-topic', 'event: delta\ndata: {"v":"gpt-6-mini"}\n\n'))[0]?.fields.responseModelSlug).toBe('gpt-6-mini');
     expect(parser.parse(frame('assistant-topic', 'data: [DONE]\n\n'))[0]?.streamEnded).toBe(true);
-    expect(parser.parse(frame('assistant-topic', patch))[0]?.fields.responseModelSlug).toBeNull();
+    const afterDone = parser.parse(frame('assistant-topic', patch))[0]!;
+    expect(afterDone.fields.responseModelSlug).toBeNull();
+    expect(afterDone.taskIdentities).toEqual([]);
   });
 
   it('reports decode failures with known correlation instead of reusing stale model evidence', () => {

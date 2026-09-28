@@ -9,6 +9,18 @@ const request = {
 };
 
 describe('route turn correlation', () => {
+  it('keeps an auto request as auto reasoning after a free-account mini response completes', () => {
+    const autoRequest = createTurn({ ...request, requestedModel: 'auto' });
+    expect(autoRequest.verdict).toBe('unknown');
+    const response = mergeTurn(autoRequest, {
+      captureId: request.captureId, source: 'page_fetch', captureMode: 'live', phase: 'completed',
+      observedAt: '2026-08-11T01:00:02.000Z', serverModelSlug: 'gpt-5-6-t-mini',
+      responseModelSlug: 'gpt-5-6-t-mini'
+    });
+    expect(response).toMatchObject({ requestedModel: 'auto', routeModel: 'gpt-5-6-t-mini',
+      verdict: 'auto_reasoning', routeModelSources: ['server_ste_metadata.model_slug'] });
+  });
+
   it('marks completed -wm Work responses as unverifiable in live and reload without changing route fields', () => {
     const live = createTurn({ ...request, phase: 'completed', requestedModel: 'gpt-6-astra-wm',
       serverModelSlug: 'gpt-6-astra-wm' });

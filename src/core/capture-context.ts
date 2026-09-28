@@ -105,7 +105,7 @@ export class CaptureContextTracker {
 
 /** Conflicting raw route fields are still evidence even when no unique model can be selected. */
 export function hasResponseEvidence(turn: RouteTurn): boolean {
-  return Boolean(turn.resolvedModelSlug || turn.serverModelSlug || turn.routeModel || turn.modelLabel || turn.modelLabelConflict);
+  return Boolean(turn.resolvedModelSlug || turn.serverModelSlug || turn.routeModel || turn.modelLabel || turn.modelLabelConflict || turn.taskKind);
 }
 
 export function latestInContext(state: InspectorState, tabId: number | undefined, mode: CaptureMode): RouteTurn | null {

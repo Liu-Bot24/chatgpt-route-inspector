@@ -5,7 +5,7 @@ import { isStaleState } from '../core/state';
 import { isPageBridgeEnvelope, type RuntimeRequest, type RuntimeResponse } from '../shared/messages';
 import { AUTHOR_LINK, AUTHOR_TEXT } from '../ui/shared/branding';
 import { t } from '../ui/shared/i18n';
-import { overlayVerdictCopy } from '../ui/shared/overlay';
+import { overlayPrimaryRouteText, overlayRouteText, overlayVerdictCopy } from '../ui/shared/overlay';
 import { bindSuspectedDowngradeHint, currentSuspectedDowngradeHint, suspectedDowngradeHintStyles } from '../ui/shared/suspected-downgrade-hint';
 import { workModeHintMarkup, workModeHintStyles } from '../ui/shared/work-mode-hint';
 
@@ -311,7 +311,7 @@ function render(): void {
   const turn = currentTurn();
   const pow = currentPowReading();
   const signature = JSON.stringify([language, mode, overlayMode,
-    turn && [turn.phase, turn.verdict, turn.requestedModel, turn.routeModel, turn.modelLabel, turn.modelLabelConflict,
+    turn && [turn.phase, turn.verdict, turn.requestedModel, turn.routeModel, turn.modelLabel, turn.modelLabelConflict, turn.researchReportModel,
       turn.routeModelSources, turn.modelLabelSources, turn.sources], pow?.rawHex, pow?.decimal]);
   if (signature === renderedSignature) return;
   renderedSignature = signature;
@@ -321,7 +321,10 @@ function render(): void {
     : turn?.verdict === 'work_unverifiable'
       ? workModeHintMarkup(language)
     : `<span class="status">${escapeHtml(copy.label)}</span>`;
-  const routeModel = turn?.verdict === 'conflict' ? t(language, 'result.routeConflict') : turn?.routeModel ?? (turn ? t(language, 'value.unavailable') : null);
+  const routeModel = overlayRouteText(turn, language);
+  const routeModelMarkup = turn?.taskKind === 'deep_research'
+    ? [overlayPrimaryRouteText(turn, language) ?? '—', turn.researchReportModel ?? '—'].map(model => `<span class="route-stage">${escapeHtml(model)}</span>`).join(' / ')
+    : escapeHtml(routeModel);
   const hint = t(language, mode === 'live' ? 'overlay.liveHint' : 'overlay.reloadHint');
   const requestedModel = turn?.requestedModel ?? (mode === 'reload' && turn ? t(language, 'value.reloadNoRequest') : null);
   const powRaw = pow?.rawHex ?? t(language, 'pow.notCaptured');
@@ -406,6 +409,13 @@ function render(): void {
       .mini,.mini-docked{--mini-accent:#efb55d;--mini-accent-width:5px;--mini-edge-width:11px;right:0;bottom:76px;border-right:0;border-radius:4px 0 0 4px;box-shadow:calc(-1 * var(--mini-accent-width)) 0 var(--mini-accent),0 16px 36px rgba(0,0,0,.35)}
       .mini.normal,.mini-docked.normal{--mini-accent:#a9f04d}
       .auto .status{color:#75c5d8}
+      .task .status{color:#c4a7ff}
+      .task .route{border-color:rgba(196,167,255,.55);box-shadow:inset 3px 0 #c4a7ff}
+      .task .route{height:auto;min-height:64px}
+      .task .response-model b,.compact.task .response-model b{height:auto;min-height:18px;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere;font-size:12px;line-height:1.4}
+      .route-stage{display:inline-block;max-width:100%;vertical-align:top}
+      .task .mini-route-value{white-space:normal;overflow-wrap:anywhere;text-overflow:clip}
+      .mini.task,.mini-docked.task{--mini-accent:#c4a7ff}
       .auto .route{border-color:rgba(117,197,216,.5);box-shadow:inset 3px 0 #75c5d8}
       .mini.auto,.mini-docked.auto{--mini-accent:#75c5d8}
       .suspect .status{color:#f4e45e}
@@ -430,8 +440,8 @@ function render(): void {
     </style>
     `;
   const overlayLanguage = language === 'zh' ? 'zh-CN' : 'en';
-  const compactOverlay = `${styles}<section class="probe compact ${copy.tone}" lang="${overlayLanguage}"><button id="expand" class="compact-hit" type="button" aria-label="${escapeHtml(t(language, 'overlay.expand'))}"><div class="route"><div class="model"><small>${escapeHtml(t(language, 'field.requested'))}</small><b>${escapeHtml(requestedModel)}</b></div><div class="arrow">→</div><div class="model"><small>${escapeHtml(t(language, 'field.responseRoute'))}</small><b>${escapeHtml(routeModel)}</b></div></div><div class="compact-pow"><span>${escapeHtml(t(language, 'pow.inline'))}</span><code>${escapeHtml(powRaw)}</code><span class="pow-divider">|</span><code>${escapeHtml(powDecimal)}</code></div></button></section>`;
-  const miniOverlay = `${styles}<section class="probe mini ${copy.tone}" lang="${overlayLanguage}"><button id="mini-dock" class="mini-dock-hit" type="button" aria-label="${escapeHtml(t(language, 'overlay.dock'))}"></button><button id="expand" class="mini-hit" type="button" aria-label="${escapeHtml(t(language, 'overlay.expand'))}"><code class="mini-value">${escapeHtml(routeModel)}</code><span class="mini-divider" aria-hidden="true"></span><code class="mini-value">${escapeHtml(powDecimal)}</code></button></section>`;
+  const compactOverlay = `${styles}<section class="probe compact ${copy.tone}" lang="${overlayLanguage}"><button id="expand" class="compact-hit" type="button" aria-label="${escapeHtml(t(language, 'overlay.expand'))}"><div class="route"><div class="model"><small>${escapeHtml(t(language, 'field.requested'))}</small><b>${escapeHtml(requestedModel)}</b></div><div class="arrow">→</div><div class="model response-model"><small>${escapeHtml(t(language, 'field.responseRoute'))}</small><b>${routeModelMarkup}</b></div></div><div class="compact-pow"><span>${escapeHtml(t(language, 'pow.inline'))}</span><code>${escapeHtml(powRaw)}</code><span class="pow-divider">|</span><code>${escapeHtml(powDecimal)}</code></div></button></section>`;
+  const miniOverlay = `${styles}<section class="probe mini ${copy.tone}" lang="${overlayLanguage}"><button id="mini-dock" class="mini-dock-hit" type="button" aria-label="${escapeHtml(t(language, 'overlay.dock'))}"></button><button id="expand" class="mini-hit" type="button" aria-label="${escapeHtml(t(language, 'overlay.expand'))}"><code class="mini-value mini-route-value">${escapeHtml(routeModel)}</code><span class="mini-divider" aria-hidden="true"></span><code class="mini-value">${escapeHtml(powDecimal)}</code></button></section>`;
   const dockedOverlay = `${styles}<section class="probe mini-docked ${copy.tone}" lang="${overlayLanguage}"><button id="mini-undock" class="mini-undock-hit" type="button" aria-label="${escapeHtml(t(language, 'overlay.undock'))}"></button></section>`;
   const fullOverlay = `${styles}
     <section class="probe ${copy.tone}" lang="${overlayLanguage}">
@@ -442,7 +452,7 @@ function render(): void {
       <div class="body">
         <div class="modes"><button id="mode-live" class="${mode === 'live' ? 'active' : ''}">${escapeHtml(t(language, 'mode.live'))}</button><button id="mode-reload" class="${mode === 'reload' ? 'active' : ''}">${escapeHtml(t(language, 'mode.reload'))}</button></div>
         <p class="hint">${escapeHtml(hint)}</p>
-        <div class="route"><div class="model"><small>${escapeHtml(t(language, 'field.requested'))}</small><b>${escapeHtml(requestedModel)}</b></div><div class="arrow">→</div><div class="model"><small>${escapeHtml(t(language, 'field.responseRoute'))}</small><b>${escapeHtml(routeModel)}</b></div></div>
+        <div class="route"><div class="model"><small>${escapeHtml(t(language, 'field.requested'))}</small><b>${escapeHtml(requestedModel)}</b></div><div class="arrow">→</div><div class="model response-model"><small>${escapeHtml(t(language, 'field.responseRoute'))}</small><b>${routeModelMarkup}</b></div></div>
         <div class="meta">
           <span>${escapeHtml(t(language, 'field.mode'))}</span><code>${escapeHtml(modeLabel(mode, language))}</code>
           <span>${escapeHtml(t(language, 'field.route'))}</span><code>${escapeHtml(routeSource(turn, language))}</code>

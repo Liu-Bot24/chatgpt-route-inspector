@@ -34,7 +34,7 @@ it.each(['zh', 'en'] as const)('anchors the tooltip to the suspected-downgrade l
   expect(html).toContain(`href="${url}"`);
   expect(html).toContain('resolved_model_slug');
   expect(html).toContain('80%');
-  expect(html).toContain(language === 'zh' ? '（生图例外）' : '(image generation excepted)');
+  expect(html).not.toContain(language === 'zh' ? '（生图例外）' : '(image generation excepted)');
   expect(html).not.toMatch(/notice-star|notice-source-label|\*>|[★☆✱✳]/);
   if (language === 'zh') expect(html).toContain('疑似降级');
   else expect(html).not.toMatch(/[\u4e00-\u9fff]/);

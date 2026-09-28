@@ -1,4 +1,5 @@
 import { EMPTY_ROUTE_FIELDS, type RouteFields } from './types';
+import { taskFromMessage } from './task-kind';
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -62,6 +63,7 @@ function fieldsFromRoot(root: Record<string, unknown> | null): RouteFields {
 
   return {
     ...EMPTY_ROUTE_FIELDS,
+    taskKind: firstMessage ? taskFromMessage(firstMessage) : null,
     requestedModel: stringValue(root.model),
     thinkingEffort: stringValue(root.thinking_effort),
     conversationId: stringValue(root.conversation_id),

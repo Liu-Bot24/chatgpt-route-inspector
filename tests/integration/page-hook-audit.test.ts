@@ -60,6 +60,198 @@ const record = (model: string) => new Response(JSON.stringify({ resolved_model_s
   headers: { 'content-type': 'application/json' }
 });
 
+const researchStream = () => sse(event({ conversation_id: 'research-conversation', message: {
+  id: 'research-tool', author: { role: 'tool' }, metadata: { resolved_model_slug: 'planner',
+    chatgpt_sdk: { resource_name: 'Deep Research App_start', widget_session_id: 'research-widget' } }
+} }) + 'data: [DONE]\n\n');
+const researchUpdate = (messageId = 'research-tool') => JSON.stringify({ type: 'conversation-update', payload: {
+  conversation_id: 'research-conversation', update_type: 'update-widget-state', update_content: { updates: [{
+    message_id: messageId, widget_state: { status: 'completed', report_message: { author: { role: 'assistant' },
+      metadata: { resolved_model_slug: 'report-model' }, content: { parts: ['PRIVATE_REPORT'] } } }
+  }] }
+} });
+
+const imageUpdate = (parent = 'input', conversation = 'conv', workingTurn = 'image-turn') => JSON.stringify({
+  type: 'conversation-update', payload: { conversation_id: conversation, update_type: 'add-messages', update_content: {
+    messages: [{ id: 'image-result', author: { role: 'tool', name: 'dynamic.tool' },
+      metadata: { parent_id: parent, working_turn_id: workingTurn, image_gen_title: 'PRIVATE_IMAGE_TITLE' } }]
+  } }
+});
+
+it('task intake: receives image updates for an ordinary completed HTTP request, with no handoff', async () => {
+  const capture = await hook(sse(event({ conversation_id: 'conv', resolved_model_slug: 'chat-model' }) + 'data: [DONE]\n\n'), '/c/conv');
+  await capture.request(); await settle();
+  const id = capture.observations.at(-1)!.captureId;
+  capture.socket().message(imageUpdate()); await settle();
+  expect(capture.observations.at(-1)).toMatchObject({ captureId: id, captureMode: 'live', taskKind: 'image_generation' });
+  expect(capture.observations.at(-1)?.resolvedModelSlug).toBeNull();
+  expect(JSON.stringify(capture.observations)).not.toContain('PRIVATE_IMAGE_TITLE');
+});
+
+it('task intake: learns the originating turn from HTTP metadata before a sibling async task arrives', async () => {
+  const capture = await hook(sse(event({ conversation_id: 'conv', message: { id: 'assistant-stream', author: { role: 'assistant' },
+    metadata: { resolved_model_slug: 'chat-model', working_turn_id: 'image-turn' } } }) + 'data: [DONE]\n\n'), '/c/conv');
+  await capture.request(); await settle();
+  capture.socket().message(imageUpdate('missing-parent')); await settle();
+  expect(capture.observations.at(-1)?.taskKind).toBe('image_generation');
+});
+
+it.each(['parent', 'turn'] as const)('task intake: learns %s identity from a matched WS handoff before a late image', async match => {
+  const capture = await hook(handoff('owned'), '/c/conv');
+  await capture.request(); await settle();
+  const id = capture.observations[0]!.captureId;
+  const socket = capture.socket();
+  socket.message(ws('owned', event({ conversation_id: 'conv', message: { id: 'assistant-ws', author: { role: 'assistant' },
+    metadata: { parent_id: 'input', resolved_model_slug: 'chat-model', working_turn_id: 'image-turn', turn_exchange_id: 'exchange' } }
+  }) + 'data: [DONE]\n\n'));
+  await settle();
+  socket.message(imageUpdate(match === 'parent' ? 'assistant-ws' : 'missing-parent', 'conv', match === 'parent' ? '' : 'image-turn'));
+  await settle();
+  expect(capture.observations.at(-1)).toMatchObject({ captureId: id, captureMode: 'live', taskKind: 'image_generation' });
+  const { upsertTurn } = await import('../../src/core/turns');
+  const turns = capture.observations.reduce<RouteTurn[]>((turns, observation) => upsertTurn(turns, observation), []);
+  expect(turns).toHaveLength(1);
+  expect(turns[0]).toMatchObject({ verdict: 'image_generation', routeModel: 'chat-model' });
+});
+
+it.each(['unmatched-topic', 'wrong-conversation', 'wrong-turn', 'wrong-exchange'] as const)('task intake: WS identity does not bypass %s isolation', async mode => {
+  const capture = await hook(handoff('owned'), '/c/conv');
+  await capture.request(); await settle();
+  const socket = capture.socket();
+  socket.message(ws(mode === 'unmatched-topic' ? 'foreign' : 'owned', event({
+    conversation_id: mode === 'wrong-conversation' ? 'other' : 'conv', message: { id: 'assistant-ws', author: { role: 'assistant' },
+      metadata: { parent_id: 'input', working_turn_id: 'image-turn', turn_exchange_id: 'exchange' } }
+  }) + 'data: [DONE]\n\n'));
+  await settle();
+  const late = JSON.parse(imageUpdate('assistant-ws', 'conv', mode === 'wrong-turn' ? 'other-turn' : 'image-turn'));
+  if (mode === 'wrong-exchange') late.payload.update_content.messages[0].metadata.turn_exchange_id = 'other-exchange';
+  socket.message(JSON.stringify(late)); await settle();
+  expect(capture.observations.some(o => o.taskKind === 'image_generation')).toBe(false);
+});
+
+it.each([false, true])('research: async planner and widget reach storage without losing the model (repeated marker: %s)', async marked => {
+  const capture = await hook(sse('data: [DONE]\n\n'), '/c/conv');
+  await capture.fetch('/backend-api/f/conversation', { method: 'POST', body: JSON.stringify({
+    model: 'gpt-6-pro', conversation_id: 'conv', messages: [{ id: 'input',
+      metadata: { system_hints: ['plugin:connector_openai_deep_research'] } }]
+  }) });
+  await settle();
+  capture.socket().message(JSON.stringify({ type: 'conversation-update', payload: { conversation_id: 'conv',
+    update_type: 'add-messages', update_content: { messages: [
+      { id: 'planner', author: { role: 'assistant' }, metadata: { parent_id: 'input', resolved_model_slug: 'planner-model',
+        ...(marked ? { system_hints: ['plugin:connector_openai_deep_research'] } : {}) } },
+      { id: 'tool', author: { role: 'tool' }, metadata: { parent_id: 'planner',
+        chatgpt_sdk: { resource_name: 'Deep Research App_start', widget_session_id: 'widget' } } }
+    ] } } }));
+  await settle();
+  expect(capture.observations.at(-1)).toMatchObject({ taskKind: 'deep_research', resolvedModelSlug: 'planner-model', researchWidgetId: 'widget', researchMessageId: 'tool' });
+  const { upsertTurn } = await import('../../src/core/turns');
+  const turns = capture.observations.reduce<RouteTurn[]>((turns, observation) => upsertTurn(turns, observation), []);
+  expect(turns).toHaveLength(1);
+  expect(turns[0]).toMatchObject({ verdict: 'deep_research', routeModel: 'planner-model', researchWidgetId: 'widget', researchReportModel: null });
+});
+
+it.each([
+  { reverse: false, widget: true }, { reverse: true, widget: true },
+  { reverse: false, widget: false }, { reverse: true, widget: false }
+])('research: WS learned turn preserves report ownership across batch order ($reverse) and widget presence ($widget)', async ({ reverse, widget }) => {
+  const capture = await hook(handoff('owned'), '/c/research-conversation');
+  await capture.fetch('/backend-api/f/conversation', { method: 'POST', body: JSON.stringify({
+    model: 'gpt-6-pro', conversation_id: 'research-conversation', messages: [{ id: 'input',
+      metadata: { system_hints: ['plugin:connector_openai_deep_research'] } }]
+  }) });
+  await settle();
+  const socket = capture.socket();
+  const turnIdentity = { working_turn_id: 'research-turn', turn_exchange_id: 'research-exchange' };
+  socket.message(ws('owned', event({ conversation_id: 'research-conversation', message: {
+    id: 'anchor', author: { role: 'assistant' }, metadata: { parent_id: 'input', ...turnIdentity }
+  } }) + 'data: [DONE]\n\n'));
+  await settle();
+  const messages = [
+    { id: 'planner', author: { role: 'assistant' }, metadata: { parent_id: 'input', ...turnIdentity,
+      system_hints: ['plugin:connector_openai_deep_research'], resolved_model_slug: 'planner-model' } },
+    { id: 'research-tool', author: { role: 'tool' }, metadata: { parent_id: 'planner', ...turnIdentity,
+      chatgpt_sdk: { resource_name: 'Deep Research App_start', ...(widget ? { widget_session_id: 'widget' } : {}) } } }
+  ];
+  socket.message(JSON.stringify({ type: 'conversation-update', payload: { conversation_id: 'research-conversation',
+    update_type: 'add-messages', update_content: { messages: reverse ? messages.reverse() : messages } } }));
+  await settle();
+  socket.message(researchUpdate());
+  await settle();
+  const { upsertTurn } = await import('../../src/core/turns');
+  const turns = capture.observations.reduce<RouteTurn[]>((turns, observation) => upsertTurn(turns, observation), []);
+  expect(turns).toHaveLength(1);
+  expect(turns[0]).toMatchObject({ verdict: 'deep_research', routeModel: 'planner-model', researchReportModel: 'report-model',
+    researchMessageId: 'research-tool', researchWidgetId: widget ? 'widget' : null });
+  expect(JSON.stringify(capture.observations)).not.toContain('PRIVATE_REPORT');
+});
+
+it.each(['pause', 'clear', 'navigate', 'wrong-conversation', 'wrong-parent'] as const)('task intake: rejects %s late image update', async mode => {
+  const capture = await hook(sse(event({ conversation_id: 'conv', resolved_model_slug: 'chat-model' }) + 'data: [DONE]\n\n'), '/c/conv');
+  await capture.request(); await settle();
+  if (mode === 'pause') capture.control({ autoCaptureEnabled: false });
+  if (mode === 'clear') capture.control({ clearedAt: new Date(Date.now() + 1).toISOString() });
+  if (mode === 'navigate') capture.navigate('/c/another');
+  capture.socket().message(imageUpdate(mode === 'wrong-parent' ? 'unrelated' : 'input', mode === 'wrong-conversation' ? 'other' : 'conv'));
+  await settle();
+  expect(capture.observations.some(o => o.taskKind === 'image_generation')).toBe(false);
+});
+
+it('task intake: binds a later sibling update to the current reload without creating a live result', async () => {
+  const data = { current_node: 'recap', messages: [{ id: 'recap', author: { role: 'assistant' },
+    metadata: { resolved_model_slug: 'chat-model', working_turn_id: 'image-turn' } }] };
+  const capture = await hook(new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } }), '/c/conv');
+  await capture.fetch('/backend-api/conversations/conv'); await settle();
+  capture.socket().message(imageUpdate('missing-parent')); await settle();
+  expect(capture.observations.at(-1)).toMatchObject({ taskKind: 'image_generation', captureMode: 'reload' });
+  expect(capture.observations.some(o => o.captureMode === 'live')).toBe(false);
+});
+
+it('task intake: a late task only updates its original request after a newer message is sent', async () => {
+  const capture = await hook(sse(event({ conversation_id: 'conv', resolved_model_slug: 'chat-model' }) + 'data: [DONE]\n\n'), '/c/conv');
+  await capture.request(); await settle();
+  const first = capture.observations.at(-1)!.captureId;
+  capture.nativeFetch.mockResolvedValueOnce(sse(event({ conversation_id: 'conv', resolved_model_slug: 'new-model' }) + 'data: [DONE]\n\n'));
+  await capture.request(undefined, { model: 'gpt-test', conversation_id: 'conv', messages: [{ id: 'next-input' }] }); await settle();
+  const second = capture.observations.at(-1)!.captureId;
+  capture.socket().message(imageUpdate()); await settle();
+  expect(first).not.toBe(second);
+  expect(capture.observations.at(-1)).toMatchObject({ captureId: first, taskKind: 'image_generation' });
+});
+
+it('research: retains a completed HTTP task association for its later report, not an unrelated widget', async () => {
+  const capture = await hook(researchStream(), '/c/research-conversation');
+  await capture.fetch('/backend-api/f/conversation', { method: 'POST', body: JSON.stringify({
+    model: 'gpt-6-pro', conversation_id: 'research-conversation', messages: [{ id: 'research-input',
+      metadata: { system_hints: ['plugin:connector_openai_deep_research'] } }]
+  }) });
+  await settle();
+  expect(capture.observations[0]).toMatchObject({ phase: 'requested', taskKind: 'deep_research' });
+  expect(capture.observations.at(-1)).toMatchObject({ phase: 'completed', resolvedModelSlug: 'planner' });
+  const originalId = capture.observations.at(-1)!.captureId;
+  const socket = capture.socket();
+  socket.message(researchUpdate('unrelated-widget'));
+  await settle();
+  expect(capture.observations.some((o) => o.researchReportModel)).toBe(false);
+  socket.message(researchUpdate());
+  await settle();
+  expect(capture.observations.at(-1)).toMatchObject({ captureId: originalId, taskKind: 'deep_research', researchReportModel: 'report-model' });
+  expect(capture.observations.at(-1)?.resolvedModelSlug).toBeUndefined();
+  expect(JSON.stringify(capture.observations)).not.toContain('PRIVATE_REPORT');
+});
+
+it.each(['pause', 'clear', 'navigate'] as const)('research: %s prevents a late report from repopulating the active capture', async (operation) => {
+  const capture = await hook(researchStream(), '/c/research-conversation');
+  await capture.request(undefined, { model: 'gpt-6-pro', conversation_id: 'research-conversation', messages: [{ id: 'research-input' }] });
+  await settle();
+  if (operation === 'pause') capture.control({ autoCaptureEnabled: false });
+  if (operation === 'clear') capture.control({ clearedAt: new Date(Date.now() + 1).toISOString() });
+  if (operation === 'navigate') capture.navigate('/c/unrelated');
+  capture.socket().message(researchUpdate());
+  await settle();
+  expect(capture.observations.some((o) => o.researchReportModel)).toBe(false);
+});
+
 it.each(['new', 'other'])('N1: stages ambiguous GET until creation identity proves %s', async (identity) => {
   const capture = await hook(sse(event({ resolved_model_slug: 'live-route' }) + event({ type: 'subscribe_ws_topic', topic_id: 'creation' })), '/');
   await capture.request(undefined, { model: 'gpt-test', conversation_id: null, messages: [{ id: 'new-input' }] });

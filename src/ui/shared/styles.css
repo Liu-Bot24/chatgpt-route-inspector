@@ -12,6 +12,7 @@
   --signal-dim: rgba(178, 244, 91, .13);
   --amber: #f0b35b;
   --suspect: #f4e45e;
+  --task: #c4a7ff;
   --danger: #f27363;
   --cyan: #75c5d8;
   --shadow: 0 24px 70px rgba(0, 0, 0, .38);
@@ -69,6 +70,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .tag.auto { color:#75c5d8; border-color:rgba(117,197,216,.5); }
 .tag.amber { color:var(--amber); border-color:rgba(240,179,91,.42); }
 .tag.suspect { color:var(--suspect); border-color:rgba(244,228,94,.55); }
+.tag.task { color:var(--task); border-color:rgba(196,167,255,.55); }
+.task-text { color:var(--task); }
 .tag.neutral { color:var(--text); border-color:rgba(242,245,233,.5); }
 .tag.danger { color:var(--danger); border-color:rgba(242,115,99,.5); }
 

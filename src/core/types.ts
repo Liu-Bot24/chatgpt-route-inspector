@@ -1,12 +1,13 @@
 export const ROUTE_SCHEMA = 'chatgpt-route-observation' as const;
-export const ROUTE_SCHEMA_VERSION = '1.8.0' as const;
+export const ROUTE_SCHEMA_VERSION = '1.9.0' as const;
+import type { TaskKind } from './task-kind';
 
 export type CaptureSource = 'page_fetch' | 'page_websocket' | 'conversation_record' | 'assistant_dom';
 export type CaptureMode = 'live' | 'reload';
 export type UiLanguage = 'zh' | 'en';
 export type OverlayMode = 'full' | 'compact' | 'mini' | 'docked';
 export type CapturePhase = 'requested' | 'responding' | 'completed' | 'failed';
-export type RouteVerdict = 'normal' | 'mismatch' | 'conflict' | 'unknown' | 'auto_reasoning' | 'suspected_downgrade' | 'work_unverifiable';
+export type RouteVerdict = 'normal' | 'mismatch' | 'conflict' | 'unknown' | 'auto_reasoning' | 'suspected_downgrade' | 'work_unverifiable' | TaskKind;
 export type ModelLabelSource =
   | 'assistant.metadata.model_slug'
   | 'assistant[data-message-model-slug]';
@@ -34,6 +35,10 @@ export const EMPTY_QUOTA_FIELDS: UsageQuotaFields = {
 };
 
 export interface RouteFields extends UsageQuotaFields {
+  taskKind: TaskKind | null;
+  researchReportModel: string | null;
+  researchWidgetId: string | null;
+  researchMessageId: string | null;
   requestedModel: string | null;
   responseModelSlug: string | null;
   defaultModelSlug: string | null;
@@ -153,6 +158,10 @@ export interface InspectorState {
 
 export const EMPTY_ROUTE_FIELDS: RouteFields = {
   ...EMPTY_QUOTA_FIELDS,
+  taskKind: null,
+  researchReportModel: null,
+  researchWidgetId: null,
+  researchMessageId: null,
   requestedModel: null,
   responseModelSlug: null,
   defaultModelSlug: null,

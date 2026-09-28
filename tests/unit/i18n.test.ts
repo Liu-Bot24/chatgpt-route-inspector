@@ -58,6 +58,15 @@ describe('UI translations', () => {
       expect(english).not.toMatch(/[\u4e00-\u9fff]/);
     }
   });
+  it('explains auto requests without claiming that the response route itself is auto-thinking', () => {
+    const automatic = createTurn({
+      captureId: 'free-auto', source: 'page_fetch', captureMode: 'live', phase: 'completed',
+      observedAt: '2026-09-27T00:00:00Z', requestedModel: 'auto', serverModelSlug: 'gpt-5-6-t-mini'
+    });
+    expect(turnResultLabel(automatic, 'zh')).toBe('自动推理');
+    expect(assessmentReasons(automatic, 'zh')).toContain('请求模型为 auto；已取得响应路由，标记为自动推理');
+    expect(assessmentReasons(automatic, 'en').join(' ')).toContain('requested model is auto');
+  });
   it('renders the same route result in Chinese and English without changing the underlying verdict', () => {
     expect(mismatch.verdict).toBe('mismatch');
     expect(turnResultLabel(mismatch, 'zh')).toBe('路由错配');

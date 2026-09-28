@@ -5,6 +5,11 @@ function normalized(value: string | null): string | null {
 }
 
 export function assessRoute(fields: RouteFields): RouteAssessment {
+  if (fields.taskKind) {
+    const evidence = assessRoute({ ...fields, taskKind: null });
+    return { ...evidence, verdict: fields.taskKind,
+      reasons: [...evidence.reasons, '已识别专用任务；保留路由证据，不以任务模型与所选聊天模型不同判定降级'] };
+  }
   const requested = normalized(fields.requestedModel);
   const routeCandidates: Array<{ source: RouteModelSource; model: string | null }> = [
     { source: 'resolved_model_slug', model: normalized(fields.resolvedModelSlug) },
@@ -76,6 +81,10 @@ export function assessRoute(fields: RouteFields): RouteAssessment {
   }
 
   if (!explicitRouteModel) reasons.push(`未取得显式响应路由字段；使用模型标签 ${routeModel} 作为响应路由`);
+  if (requested === 'auto') {
+    reasons.push('请求模型为 auto，已取得响应路由；标记为自动推理');
+    return { verdict: 'auto_reasoning', routeModel, routeModelSources, modelLabel, modelLabelSources, modelLabelConflict, reasons };
+  }
   if (!requested) {
     reasons.push('已取得响应路由模型，但当前记录没有对应的请求模型');
     return { verdict: 'unknown', routeModel, routeModelSources, modelLabel, modelLabelSources, modelLabelConflict, reasons };

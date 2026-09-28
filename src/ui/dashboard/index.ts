@@ -107,6 +107,9 @@ function renderDetail(turn: RouteTurn | null, language: UiLanguage): void {
     ['detail.adapters', turn.sources.join(' + ')]
   ];
   const availableItems = items.filter(([, value]) => value !== null && value !== '');
+  if (turn.taskKind === 'deep_research') availableItems.unshift(
+    ['field.planningModel', turn.routeModel ?? '—'], ['field.reportModel', turn.researchReportModel ?? '—']
+  );
   detail.innerHTML = `<div class="evidence-list">${availableItems.map(([label, value]) => {
     const isAssistantLabel = label === 'detail.assistantMetadataLabel';
     const quotaHint = evidenceFieldHints[label]?.startsWith('limits_progress')
@@ -133,6 +136,7 @@ function render(next: InspectorState): void {
 
   const verdictFilters: Array<[RouteVerdict | 'all', TranslationKey]> = [['all', 'filter.allVerdicts'], ['normal', 'filter.normal'], ['auto_reasoning', 'filter.autoReasoning'], ['suspected_downgrade', 'filter.suspectedDowngrade'], ['work_unverifiable', 'filter.workUnverifiable'], ['mismatch', 'filter.mismatch'], ['conflict', 'filter.conflict'], ['unknown', 'filter.unknown']];
   const modeFilters: Array<[CaptureMode | 'all', TranslationKey]> = [['all', 'filter.allModes'], ['live', 'mode.live'], ['reload', 'mode.reload']];
+  verdictFilters.splice(3, 0, ['image_generation', 'result.imageGeneration'], ['deep_research', 'result.deepResearch']);
   document.querySelector<HTMLElement>('#filters')!.innerHTML = verdictFilters.map(([value, label]) => `<button class="filter-button ${filter === value ? 'active' : ''}" data-filter="${value}">${escapeHtml(t(language, label))}</button>`).join('');
   document.querySelector<HTMLElement>('#mode-filters')!.innerHTML = modeFilters.map(([value, label]) => `<button class="filter-button ${modeFilter === value ? 'active' : ''}" data-mode-filter="${value}">${escapeHtml(t(language, label))}</button>`).join('');
 

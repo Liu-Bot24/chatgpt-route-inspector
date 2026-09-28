@@ -1,6 +1,9 @@
 import { EMPTY_ROUTE_FIELDS, type RouteFields } from './types';
 import { SseDecoder, type DecodedSseEvent } from './sse-decoder';
 import { parseUsageQuota } from './usage-quota';
+import { taskFromMessage, taskFromMetadata } from './task-kind';
+import { researchFromMetadata } from './research';
+import { sameTaskTurn, taskIdentity, type TaskIdentity } from './task-identity';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -36,6 +39,7 @@ function extractMetadata(metadata: UnknownRecord, modelKind: 'assistant' | 'serv
   const model = stringValue(metadata.model_slug);
   return {
     ...parseUsageQuota(metadata),
+    taskKind: taskFromMetadata(metadata),
     responseModelSlug: modelKind === 'assistant' ? model : null,
     serverModelSlug: modelKind === 'server' ? model : null,
     defaultModelSlug: stringValue(metadata.default_model_slug),
@@ -65,8 +69,9 @@ function walkForFields(value: unknown, accumulator: RouteFields, depth = 0, budg
   const record = asRecord(value);
   if (!record) return accumulator;
 
-  let result = accumulator;
+  let result = mergeFields(accumulator, { taskKind: taskFromMessage(record) });
   const metadata = asRecord(record.metadata);
+  if (metadata) result = mergeFields(result, researchFromMetadata(metadata, record.id));
   if (record.type === 'server_ste_metadata' && metadata) {
     result = mergeFields(result, extractMetadata(metadata, 'server'));
   } else {
@@ -84,7 +89,7 @@ function walkForFields(value: unknown, accumulator: RouteFields, depth = 0, budg
   for (const [key, nested] of Object.entries(record)) {
     if (budget.count > 3000) break;
     // Message bodies and tool payloads are not metadata containers.
-    if (['content', 'parts', 'text', 'args', 'arguments', 'input', 'output'].includes(key)) continue;
+    if (['content', 'parts', 'text', 'args', 'arguments', 'input', 'output', 'report_message', 'widget_state'].includes(key)) continue;
     if (record.type === 'server_ste_metadata' && key === 'metadata') continue;
     if (nested && typeof nested === 'object') result = walkForFields(nested, result, depth + 1, budget);
   }
@@ -123,13 +128,14 @@ export function parseSseResponse(raw: string): RouteFields {
 function messageFields(message: UnknownRecord): RouteFields {
   const author = asRecord(message.author);
   const metadata = asRecord(message.metadata);
-  if (!metadata) return { ...EMPTY_ROUTE_FIELDS };
+  if (!metadata) return { ...EMPTY_ROUTE_FIELDS, taskKind: taskFromMessage(message) };
   let fields = mergeFields(
-    { ...EMPTY_ROUTE_FIELDS },
+    { ...EMPTY_ROUTE_FIELDS, taskKind: taskFromMessage(message) },
     extractMetadata(metadata, author?.role === 'assistant' ? 'assistant' : 'none')
   );
   const nestedServerMetadata = asRecord(metadata.server_ste_metadata);
   if (nestedServerMetadata) fields = mergeFields(fields, extractMetadata(nestedServerMetadata, 'server'));
+  fields = mergeFields(fields, researchFromMetadata(metadata, message.id));
   return fields;
 }
 
@@ -138,10 +144,12 @@ function hasModelEvidence(fields: RouteFields): boolean {
     fields.responseModelSlug ||
     fields.resolvedModelSlug ||
     fields.serverModelSlug
+    || fields.taskKind
   );
 }
 
 interface ConversationNode {
+  identity: TaskIdentity;
   key: string;
   messageId: string;
   parentId: string | null;
@@ -167,6 +175,16 @@ function fieldsForAssistant(
     if (parent.role === 'user') break;
     parentId = parent.parentId;
   }
+  // The visible recap may have a missing parent while its generated image is a
+  // sibling. Inspect only exact same-round nodes; do not borrow ordinary route fields.
+  for (const sibling of new Set(nodesById.values())) {
+    if (sibling === node || !sameTaskTurn(node.identity, sibling.identity)) continue;
+    fields = mergeFields(fields, {
+      taskKind: sibling.fields.taskKind,
+      researchWidgetId: sibling.fields.researchWidgetId, researchMessageId: sibling.fields.researchMessageId,
+      researchReportModel: sibling.fields.researchReportModel
+    });
+  }
   return fields;
 }
 
@@ -179,7 +197,7 @@ function activeAssistant(
   for (let depth = 0; node && depth < 64; depth += 1) {
     if (visited.has(node.key)) return null;
     visited.add(node.key);
-    if (node.role === 'assistant') return node;
+    if (node.role === 'assistant' || (node.role === 'tool' && node.fields.taskKind)) return node;
     node = node.parentId ? nodesById.get(node.parentId) ?? null : null;
   }
   return null;
@@ -202,9 +220,10 @@ export function parseConversationRecord(value: unknown): RouteFields[] {
     const message = nestedMessage ?? node;
     const author = asRecord(message?.author);
     const parsed = {
+      identity: taskIdentity(message ?? {}),
       key,
       messageId: stringValue(message?.id) ?? key,
-      parentId: identifier(node?.parent) ?? identifier(message?.parent_id),
+      parentId: identifier(node?.parent) ?? identifier(message?.parent_id) ?? identifier(asRecord(message?.metadata)?.parent_id),
       role: stringValue(author?.role),
       fields: message ? messageFields(message) : { ...EMPTY_ROUTE_FIELDS }
     };

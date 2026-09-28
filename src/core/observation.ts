@@ -1,6 +1,7 @@
 import { EMPTY_ROUTE_FIELDS, type CaptureMode, type CapturePhase, type CaptureSource, type RouteFields, type RouteObservation } from './types';
 import { redactConversationPathname } from './chatgpt-path';
 import { normalizeUsageQuota } from './usage-quota';
+import { normalizeTaskKind } from './task-kind';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -47,6 +48,10 @@ function routeFields(record: UnknownRecord): RouteFields {
   return {
     ...EMPTY_ROUTE_FIELDS,
     ...normalizeUsageQuota(record),
+    taskKind: normalizeTaskKind(record.taskKind),
+    researchReportModel: record.taskKind === 'deep_research' ? boundedString(record.researchReportModel, 256) : null,
+    researchWidgetId: record.taskKind === 'deep_research' ? boundedString(record.researchWidgetId) : null,
+    researchMessageId: record.taskKind === 'deep_research' ? boundedString(record.researchMessageId) : null,
     requestedModel: boundedString(record.requestedModel, 256),
     responseModelSlug: boundedString(record.responseModelSlug, 256),
     defaultModelSlug: boundedString(record.defaultModelSlug, 256),

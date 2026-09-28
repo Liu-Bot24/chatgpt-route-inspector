@@ -1,4 +1,5 @@
 import { projectLimitsProgress } from './usage-quota';
+import { projectResearchWidgetState } from './research';
 
 type RecordValue = Record<string, unknown>;
 
@@ -9,6 +10,8 @@ const MAX_OPERATIONS = 512;
 const MAX_STRING_CHARS = 1024;
 const KEYS = new Set([
   'message', 'messages', 'metadata', 'server_ste_metadata', 'author', 'role', 'type',
+  'name', 'recipient', 'system_hints', 'chatgpt_sdk', 'resource_name', 'invoked_resource', 'app_name',
+  'widget_session_id', 'widget_state', 'report_message', 'image_gen_title', 'working_turn_id', 'turn_exchange_id',
   'id', 'parent', 'parent_id', 'conversation_id', 'model_slug', 'default_model_slug',
   'resolved_model_slug', 'plan_type', 'request_id', 'tool_invoked', 'tool_name',
   'is_search', 'did_prompt_contain_image', 'fast_convo', 'limits_progress', 'feature_name', 'remaining', 'reset_after'
@@ -35,6 +38,8 @@ function project(value: unknown, depth = 0, budget = { nodes: 0 }): unknown {
   for (const [key, item] of Object.entries(source)) {
     if (!KEYS.has(key)) continue;
     if (key === 'limits_progress') { result[key] = projectLimitsProgress(item); continue; }
+    if (key === 'widget_state') { result[key] = projectResearchWidgetState(item); continue; }
+    if (key === 'image_gen_title') { result[key] = typeof item === 'string' && item.trim() ? 'present' : null; continue; }
     const projected = project(item, depth + 1, budget);
     if (projected !== undefined) result[key] = projected;
   }
@@ -198,7 +203,8 @@ export class SseDecoder {
       if (typeof old === 'string') target[key] = old.slice(0, value);
       else if (Array.isArray(old)) old.length = Math.min(old.length, value);
     } else {
-      const next = project(value);
+      const next = tokens.at(-1) === 'widget_state' ? projectResearchWidgetState(value)
+        : tokens.at(-1) === 'image_gen_title' ? (typeof value === 'string' && value.trim() ? 'present' : null) : project(value);
       if (op === 'append' && typeof old === 'string' && typeof next === 'string') {
         if (old.length + next.length > MAX_STRING_CHARS) throw new Error('stream_metadata_limit');
         target[key] = old + next;

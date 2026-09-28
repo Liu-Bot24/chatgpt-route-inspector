@@ -20,6 +20,10 @@ function fieldsFromObservation(observation: RouteObservation) {
   return {
     ...EMPTY_ROUTE_FIELDS,
     ...normalizeUsageQuota(observation),
+    taskKind: observation.taskKind ?? null,
+    researchReportModel: observation.researchReportModel ?? null,
+    researchWidgetId: observation.researchWidgetId ?? null,
+    researchMessageId: observation.researchMessageId ?? null,
     requestedModel: observation.requestedModel ?? null,
     responseModelSlug: observation.responseModelSlug ?? null,
     defaultModelSlug: observation.defaultModelSlug ?? null,
@@ -117,6 +121,10 @@ export function mergeTurn(turn: RouteTurn, observation: RouteObservation): Route
     stale ? current ?? incoming : incoming ?? current;
   const incoming = fieldsFromObservation(observation);
   const fields = {
+    taskKind: pick(turn.taskKind, incoming.taskKind),
+    researchReportModel: pick(turn.researchReportModel, incoming.researchReportModel),
+    researchWidgetId: pick(turn.researchWidgetId, incoming.researchWidgetId),
+    researchMessageId: pick(turn.researchMessageId, incoming.researchMessageId),
     deepResearchRemaining: pick(turn.deepResearchRemaining, incoming.deepResearchRemaining),
     deepResearchResetAt: pick(turn.deepResearchResetAt, incoming.deepResearchResetAt),
     imageGenRemaining: pick(turn.imageGenRemaining, incoming.imageGenRemaining),

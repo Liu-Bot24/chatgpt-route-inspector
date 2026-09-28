@@ -10,6 +10,8 @@ import { mergeRouteFields, parseResponseValue, ResponseStreamParser } from '../c
 import type { CaptureContext, CaptureMode, PowObservation, RouteFields, RouteObservation, UsageQuotaFields } from '../core/types';
 import { WebSocketRouteParser, type WebSocketRouteEvidence } from '../core/websocket-parser';
 import type { PageBridgeEnvelope } from '../shared/messages';
+import { TaskCaptures } from '../core/task-captures';
+import { currentTaskIdentity, type TaskIdentity } from '../core/task-identity';
 
 const nativeFetch = window.fetch;
 const nativeWebSocket = window.WebSocket;
@@ -20,6 +22,7 @@ const MAX_PENDING_CAPTURES = 32;
 const MAX_CAPTURE_TOPICS = 8;
 const PENDING_CAPTURE_TTL_MS = 10 * 60 * 1000;
 let captureEnabled = true;
+const taskCaptures = new TaskCaptures();
 let captureContext = new CaptureContextTracker(`${location.origin}${location.pathname}`);
 let lastContextSignature = '';
 interface ReloadVisit { context: CaptureContext; committedStartedAt: string | null; unresolvedCreation: boolean; discarded?: boolean }
@@ -87,6 +90,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   const nextClearedAt = typeof data.clearedAt === 'string' ? Date.parse(data.clearedAt) || 0 : 0;
   const pausing = captureEnabled && !data.autoCaptureEnabled;
   if (pausing || nextClearedAt > clearedAt) {
+    taskCaptures.clear(pausing ? Infinity : nextClearedAt);
     if (pausing) captureEpoch++;
     for (const [id, pending] of pendingLiveCaptures) {
       if (pausing || Date.parse(pending.startedAt) <= nextClearedAt) pendingLiveCaptures.delete(id);
@@ -138,7 +142,7 @@ function rememberQuota(fields: UsageQuotaFields, startedAt: string): UsageQuotaF
   return latestQuota;
 }
 
-function emit(observation: RouteObservation): void {
+function emit(observation: RouteObservation, identity?: TaskIdentity | null): void {
   if (!canCapture(observation.captureMode, observation.startedAt ?? observation.observedAt)) return;
   if (observation.captureMode === 'live' && observation.captureContextId) {
     publishContext();
@@ -155,6 +159,7 @@ function emit(observation: RouteObservation): void {
     observation
   };
   window.postMessage(envelope, location.origin);
+  taskCaptures.observe(observation, captureContext.snapshot().id, Date.now(), identity);
 }
 
 function emitPow(pow: PowObservation): void {
@@ -301,11 +306,15 @@ function hasWebSocketMetadata(fields: RouteFields): boolean {
     fields.resolvedModelSlug ||
     fields.serverModelSlug ||
     fields.requestId ||
-    fields.planType || hasUsageQuota(fields)
+    fields.planType || fields.taskKind || hasUsageQuota(fields)
   );
 }
 
 function handleWebSocketText(raw: string, parser: WebSocketRouteParser): void {
+  if (canCapture('live')) {
+    publishContext();
+    for (const update of taskCaptures.consume(raw, captureContext.snapshot().id)) emit(update);
+  }
   if (!canCapture('live') || pendingLiveCaptures.size === 0) { parser.clear(); return; }
   const evidenceItems = parser.parse(raw);
   const updates = new Map<string, { pending: PendingLiveCapture; fields: RouteFields; terminal: boolean; streamEnded: boolean; identityChanged: boolean }>();
@@ -328,6 +337,7 @@ function handleWebSocketText(raw: string, parser: WebSocketRouteParser): void {
       pendingLiveCaptures.delete(pending.captureId);
       continue;
     }
+    taskCaptures.rememberIdentities(pending.captureId, pending.captureContextId, evidence.taskIdentities);
     const current = updates.get(pending.captureId);
     updates.set(pending.captureId, {
       pending,
@@ -383,6 +393,9 @@ async function parseSseStream(
   const decoder = new TextDecoder();
   let handedOff = false;
   const parser = new ResponseStreamParser((event) => {
+    if (!event.done && epoch === captureEpoch && canCapture('live', startedAt)) {
+      taskCaptures.rememberStream(captureId, captureContextId, event.value);
+    }
     const value = event.value as { type?: string; topic_id?: unknown; topic?: unknown } | null;
     if (value?.type === 'stream_handoff' || value?.type === 'subscribe_ws_topic') {
       handedOff = true;
@@ -488,9 +501,10 @@ async function parseConversationJson(
 ): Promise<void> {
   const raw = await boundedResponseText(response, MAX_CONVERSATION_RECORD_BYTES, 'record_too_large', startedAt);
   const parsed: unknown = JSON.parse(raw);
+  const taskAnchor = currentTaskIdentity(parsed);
   const parsedQuota = parseUsageQuota(parsed);
   const results = parseResponseValue(parsed).filter((fields) =>
-    Boolean(fields.responseModelSlug || fields.resolvedModelSlug || fields.serverModelSlug)
+    Boolean(fields.responseModelSlug || fields.resolvedModelSlug || fields.serverModelSlug || fields.taskKind)
   );
   candidate.deliver = () => {
     if (!candidate.visit || candidate.visit.discarded || candidate.visit.committedStartedAt || epoch !== captureEpoch || !canCapture('reload', startedAt)) return;
@@ -519,7 +533,7 @@ async function parseConversationJson(
         pageUrl: candidate.visit.context.pageUrl,
         ...mergeRouteFields(quotaAtStart, fields, ownQuota ?? {}),
         conversationId: conversationId ?? fields.conversationId
-      });
+      }, results.length === 1 ? taskAnchor : null);
     }
   };
   candidate.deliver();
@@ -605,7 +619,7 @@ async function inspectFetch(
       startedAt,
       pageUrl,
       ...fields
-    });
+    }, { messageId: correlation.inputMessageId, parentId: null, workingTurnId: null, exchangeId: null });
     return fields;
   });
   const failed = (errorCode: string): void => {
@@ -748,7 +762,7 @@ function observeWebSocket(socket: WebSocket): void {
   const parser = new WebSocketRouteParser();
   socket.addEventListener('close', () => parser.clear(), { once: true });
   socket.addEventListener('message', (event) => {
-    if (typeof event.data !== 'string' || !canCapture('live') || pendingLiveCaptures.size === 0) { parser.clear(); return; }
+    if (typeof event.data !== 'string' || !canCapture('live')) { parser.clear(); return; }
     const raw = event.data;
     queueMicrotask(() => handleWebSocketText(raw, parser));
   });
@@ -887,6 +901,7 @@ window.addEventListener('pageshow', (event) => {
   deferredReloads.clear();
   for (const reader of inspectionReaders.keys()) void reader.cancel().catch(() => undefined);
   pendingLiveCaptures.clear();
+  taskCaptures.clear();
   latestQuota = null;
   captureContext = new CaptureContextTracker(`${location.origin}${location.pathname}`);
   publishContext();

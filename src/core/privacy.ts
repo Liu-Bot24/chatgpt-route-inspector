@@ -30,6 +30,8 @@ export function sanitizeTurn(turn: RouteTurn, includeRequestIds = false): RouteT
     ...(turn.captureContextId ? { captureContextId: '[redacted]' } : {}),
     pageUrl: sanitizePageUrl(turn.pageUrl),
     conversationId: redactedId(turn.conversationId),
+    researchWidgetId: redactedId(turn.researchWidgetId),
+    researchMessageId: redactedId(turn.researchMessageId),
     requestId: includeRequestIds ? turn.requestId : redactedId(turn.requestId),
     networkRequestId: includeRequestIds ? turn.networkRequestId : redactedId(turn.networkRequestId)
   };
@@ -73,6 +75,9 @@ export function buildMarkdownReport(state: InspectorState, language: UiLanguage 
     const label = turn.modelLabelConflict ? (chinese ? '标签字段不一致' : 'Label fields disagree') : turn.modelLabel ?? unknown;
     lines.push(`| ${turn.observedAt} | ${turn.captureMode} | ${turn.requestedModel ?? unknown} | ${label} | ${turn.routeModel ?? unknown} | ${turn.routeModelSources.join(' + ') || none} | ${turn.verdict} | ${turn.requestId ?? none} |`);
   }
+  for (const turn of exported.turns.filter((item) => item.taskKind === 'deep_research')) lines.push('', chinese
+    ? `${turn.observedAt} · 规划模型：${turn.routeModel ?? '—'}；报告模型：${turn.researchReportModel ?? '—'}`
+    : `${turn.observedAt} · Planning model: ${turn.routeModel ?? '—'}; Report model: ${turn.researchReportModel ?? '—'}`);
   lines.push('', chinese
     ? '> 本报告只包含允许字段，不包含提示词、回答正文、Cookie、Authorization 或令牌。'
     : '> This report contains allowlisted fields only. It excludes prompts, answer text, cookies, Authorization headers, and tokens.');

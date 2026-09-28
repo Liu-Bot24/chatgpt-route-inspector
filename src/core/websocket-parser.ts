@@ -1,5 +1,6 @@
 import { ResponseStreamParser } from './response-parser';
 import { EMPTY_ROUTE_FIELDS, type RouteFields } from './types';
+import { streamTaskIdentities, type TaskIdentity } from './task-identity';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -15,6 +16,7 @@ export interface WebSocketRouteEvidence {
   conversationIds: string[];
   messageIds: string[];
   parentIds: string[];
+  taskIdentities: TaskIdentity[];
   terminal: boolean;
   streamEnded: boolean;
   errorCode?: string;
@@ -97,6 +99,7 @@ interface TopicState {
   streamEnded: boolean;
   expiresAt: number;
   reset: boolean;
+  taskIdentities: TaskIdentity[];
 }
 
 /** A socket multiplexes topics; never inherit delta paths/roles from another topic. */
@@ -111,15 +114,20 @@ export class WebSocketRouteParser {
         if (event.reset) {
           state.reset = true;
           state.correlation = emptyCorrelation();
+          state.taskIdentities = [];
         }
         state.streamEnded ||= event.done;
         state.correlation.terminal ||= event.done;
-        if (!event.done) collectCorrelation(event.value, state.correlation);
+        if (!event.done) {
+          collectCorrelation(event.value, state.correlation);
+          state.taskIdentities.push(...streamTaskIdentities(event.value).slice(0, 128 - state.taskIdentities.length));
+        }
       }),
       correlation: emptyCorrelation(),
       streamEnded: false,
       expiresAt: 0,
-      reset: false
+      reset: false,
+      taskIdentities: []
     };
     return state;
   }
@@ -149,6 +157,7 @@ export class WebSocketRouteParser {
       state.correlation = emptyCorrelation();
       state.streamEnded = false;
       state.reset = false;
+      state.taskIdentities = [];
       let fields: RouteFields;
       let errorCode: string | undefined;
       try {
@@ -171,6 +180,7 @@ export class WebSocketRouteParser {
         conversationIds: [...correlation.conversationIds],
         messageIds: [...correlation.messageIds],
         parentIds: [...correlation.parentIds],
+        taskIdentities: [...state.taskIdentities],
         terminal: correlation.terminal,
         streamEnded: state.streamEnded,
         ...(errorCode ? { errorCode } : {})

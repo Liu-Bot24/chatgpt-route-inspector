@@ -53,6 +53,8 @@ export function modelLabel(model: string | null, language: UiLanguage): string {
 export function verdictLabel(verdict: RouteVerdict, language: UiLanguage): string {
   return {
     normal: t(language, 'result.normal'),
+    image_generation: t(language, 'result.imageGeneration'),
+    deep_research: t(language, 'result.deepResearch'),
     mismatch: t(language, 'result.mismatch'),
     conflict: t(language, 'result.routeConflict'),
     auto_reasoning: t(language, 'result.autoReasoning'),
@@ -63,6 +65,7 @@ export function verdictLabel(verdict: RouteVerdict, language: UiLanguage): strin
 }
 
 export function verdictTone(verdict: RouteVerdict): string {
+  if (verdict === 'image_generation' || verdict === 'deep_research') return 'task';
   if (verdict === 'auto_reasoning') return 'auto';
   if (verdict === 'suspected_downgrade') return 'suspect';
   if (verdict === 'work_unverifiable') return 'neutral';
@@ -129,8 +132,15 @@ export function assessmentReasons(turn: RouteTurn, language: UiLanguage): string
   }
 
   if (turn.modelLabelConflict) reasons.push(t(language, 'reason.labelConflict'));
+  if (turn.verdict === 'image_generation' || turn.verdict === 'deep_research') {
+    if (!turn.routeModel && turn.routeModelSources.length) reasons.push(t(language, 'reason.routeConflict'));
+    reasons.push(t(language, 'reason.specialTask'));
+    return reasons;
+  }
   if (turn.verdict === 'auto_reasoning') {
-    reasons.push(t(language, 'reason.autoReasoning', { model: turn.routeModel ?? '' }));
+    reasons.push(turn.requestedModel?.trim().toLowerCase() === 'auto'
+      ? t(language, 'reason.autoRequested')
+      : t(language, 'reason.autoReasoning', { model: turn.routeModel ?? '' }));
     return reasons;
   }
   if (turn.verdict === 'suspected_downgrade') {

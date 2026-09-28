@@ -3,6 +3,19 @@ import { assessRoute } from '../../src/core/assessment';
 import { EMPTY_ROUTE_FIELDS } from '../../src/core/types';
 
 describe('assessRoute', () => {
+  it.each(['image_generation', 'deep_research'] as const)('keeps the original route evidence rules for %s', (taskKind) => {
+    const models = [null, 'gpt-5-6-thinking', 'gpt-5-4-auto-thinking', 'gpt-5-6-auto-thinking'];
+    for (const resolvedModelSlug of models) for (const serverModelSlug of models)
+      for (const responseModelSlug of models) for (const domModelSlug of models) {
+        const fields = { ...EMPTY_ROUTE_FIELDS, requestedModel: 'gpt-6-pro',
+          resolvedModelSlug, serverModelSlug, responseModelSlug, domModelSlug };
+        const ordinary = assessRoute(fields);
+        const task = assessRoute({ ...fields, taskKind });
+        expect(task).toMatchObject({ verdict: taskKind, routeModel: ordinary.routeModel,
+          routeModelSources: ordinary.routeModelSources, modelLabel: ordinary.modelLabel,
+          modelLabelSources: ordinary.modelLabelSources, modelLabelConflict: ordinary.modelLabelConflict });
+      }
+  });
   it.each(['gpt-5-6-auto-thinking', 'gpt-5-5-auto-thinking'])('classifies %s separately from normal and conflict', (model) => {
     const result = assessRoute({
       ...EMPTY_ROUTE_FIELDS,
@@ -26,12 +39,29 @@ describe('assessRoute', () => {
     }
   );
 
-  it('does not infer auto reasoning from a request, default model or unused label', () => {
-    expect(assessRoute({ ...EMPTY_ROUTE_FIELDS, requestedModel: 'auto', resolvedModelSlug: 'gpt-5-6' }).verdict).toBe('mismatch');
+  it.each(['gpt-5-6-t-mini', 'gpt-5-6', 'gpt-5-4-auto-thinking'])(
+    'classifies an auto request routed to %s as auto reasoning while retaining the route', (model) => {
+      expect(assessRoute({ ...EMPTY_ROUTE_FIELDS, requestedModel: ' AUTO ', serverModelSlug: model,
+        responseModelSlug: model })).toMatchObject({
+        verdict: 'auto_reasoning', routeModel: model,
+        routeModelSources: ['server_ste_metadata.model_slug']
+      });
+    }
+  );
+
+  it('does not infer auto reasoning from a default model or an unused label', () => {
     expect(assessRoute({ ...EMPTY_ROUTE_FIELDS, defaultModelSlug: 'auto' }).verdict).toBe('unknown');
     expect(assessRoute({
       ...EMPTY_ROUTE_FIELDS, requestedModel: 'gpt-5-6', resolvedModelSlug: 'gpt-5-6', responseModelSlug: 'gpt-5-6-auto-thinking'
     }).verdict).toBe('conflict');
+  });
+
+  it('keeps missing and contradictory response evidence visible for auto requests', () => {
+    expect(assessRoute({ ...EMPTY_ROUTE_FIELDS, requestedModel: 'auto' }).verdict).toBe('unknown');
+    expect(assessRoute({ ...EMPTY_ROUTE_FIELDS, requestedModel: 'auto',
+      resolvedModelSlug: 'gpt-5-6-pro', serverModelSlug: 'gpt-5-6-t-mini' }).verdict).toBe('conflict');
+    expect(assessRoute({ ...EMPTY_ROUTE_FIELDS, requestedModel: 'auto',
+      serverModelSlug: 'gpt-5-6-t-mini', responseModelSlug: 'gpt-5-6-pro' }).verdict).toBe('conflict');
   });
 
   it.each(['gpt-5-6-thinking', 'gpt-5-4-auto-thinking'])('keeps conflicting route evidence when the other field is %s', (other) => {
