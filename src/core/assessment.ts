@@ -4,6 +4,14 @@ function normalized(value: string | null): string | null {
   return value?.trim().toLowerCase() || null;
 }
 
+function isSupportedAutoThinking(model: string | null): boolean {
+  const version = model?.match(/^gpt-(\d+)(?:-(\d+))?-auto-thinking$/);
+  if (!version) return false;
+  const major = Number(version[1]);
+  const minor = Number(version[2] ?? 0);
+  return major > 5 || (major === 5 && minor >= 5);
+}
+
 export function assessRoute(fields: RouteFields): RouteAssessment {
   if (fields.taskKind) {
     const evidence = assessRoute({ ...fields, taskKind: null });
@@ -36,10 +44,10 @@ export function assessRoute(fields: RouteFields): RouteAssessment {
 
   const explicitRouteConflict = routeModels.length > 1;
   const explicitRouteModel = explicitRouteConflict ? null : routeModels[0] ?? null;
-  // A dedicated display category for these exact routes, not a general exemption for auto models.
+  // Standard auto-thinking routes at version 5.5 or later; no mini or other variants.
   // Keep conflicting server fields and every other route on the existing assessment path.
   const autoRouteModel = presentRoutes.length > 0 ? explicitRouteModel : modelLabel;
-  if (autoRouteModel === 'gpt-5-6-auto-thinking' || autoRouteModel === 'gpt-5-5-auto-thinking') {
+  if (isSupportedAutoThinking(autoRouteModel)) {
     return {
       verdict: 'auto_reasoning',
       routeModel: autoRouteModel,
