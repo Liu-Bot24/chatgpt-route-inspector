@@ -10,6 +10,9 @@ export type RuntimeRequest =
   | { type: 'route:open-dashboard' }
   | { type: 'route:open-announcement' };
 
+/** Sent from extension pages to a tab; only a live bridge in that document answers. */
+export interface BridgePingRequest { type: 'route:bridge-ping' }
+
 export interface RuntimeResponse {
   ok: boolean;
   state?: InspectorState;

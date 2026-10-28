@@ -31,7 +31,7 @@ async function bridge(failInitialState: false | 'throw' | 'reject' | 'missing-ta
   vi.stubGlobal('document', { documentElement: { append: vi.fn() }, querySelectorAll: () => nodes, createElement: () => host });
   let mutation!: MutationCallback;
   vi.stubGlobal('MutationObserver', class { constructor(callback: MutationCallback) { mutation = callback; } observe() {} });
-  let stateListener!: (message: unknown) => void;
+  let stateListener!: (message: unknown, sender?: unknown, sendResponse?: (response: unknown) => void) => void;
   vi.stubGlobal('chrome', { runtime: { sendMessage: send, onMessage: { addListener: (fn: typeof stateListener) => { stateListener = fn; } } } });
   await import('../../src/content/bridge');
   await Promise.resolve();
@@ -39,6 +39,11 @@ async function bridge(failInitialState: false | 'throw' | 'reject' | 'missing-ta
     pageUrl: 'https://chatgpt.com/c/a', revision: 0, reloadEligible: true };
   return {
     send, context, nodes, root, host, click: (id: string) => clicks.get(id)?.(), mutate: () => mutation([], {} as MutationObserver),
+    message: (message: unknown) => {
+      const sendResponse = vi.fn();
+      stateListener(message, {}, sendResponse);
+      return sendResponse;
+    },
     observe: () => listeners.get('message')?.({ source: windowMock, origin: 'https://chatgpt.com', data: {
       source: 'chatgpt-route-inspector', version: 1, observation: {
         captureId: 'startup', source: 'page_fetch', captureMode: 'live', phase: 'completed',
@@ -270,4 +275,10 @@ it('keeps normal controls usable after a transient worker failure', async () => 
   capture.click('dashboard');
   await vi.advanceTimersByTimeAsync(1);
   expect(capture.send.mock.calls.at(-1)?.[0]).toEqual({ type: 'route:open-dashboard' });
+});
+
+it('answers the popup bridge ping so an injected page is not reported as needing a reload', async () => {
+  const capture = await bridge();
+  expect(capture.message({ type: 'route:bridge-ping' })).toHaveBeenCalledWith({ ok: true });
+  expect(capture.message({ type: 'route:unknown' })).not.toHaveBeenCalled();
 });

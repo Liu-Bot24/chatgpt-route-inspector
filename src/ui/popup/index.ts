@@ -1,5 +1,5 @@
 import { buildMarkdownReport } from '../../core/privacy';
-import { displayTabId } from '../../core/page-scope';
+import { classifyPageConnection, displayTabId, type PageConnection } from '../../core/page-scope';
 import { isStaleState } from '../../core/state';
 import type { CaptureMode, InspectorState, UiLanguage } from '../../core/types';
 import {
@@ -21,6 +21,7 @@ import {
   verdictTone
 } from '../shared/client';
 import { applyStaticTranslations, bindLanguageSwitch, t, type TranslationKey } from '../shared/i18n';
+import type { BridgePingRequest } from '../../shared/messages';
 
 const hero = document.querySelector<HTMLElement>('#hero');
 const metrics = document.querySelector<HTMLElement>('#metrics');
@@ -32,14 +33,23 @@ const powHex = document.querySelector<HTMLElement>('#pow-hex');
 const powDecimal = document.querySelector<HTMLElement>('#pow-decimal');
 const footerMachine = document.querySelector<HTMLElement>('#footer-machine');
 const footerStatus = document.querySelector<HTMLElement>('#footer-status');
+const pageNotice = document.querySelector<HTMLElement>('#page-notice');
+const pageNoticeText = document.querySelector<HTMLElement>('#page-notice-text');
 let activeTab: chrome.tabs.Tab | undefined;
+let pageConnection: PageConnection = 'unsupported';
+let connectionProbe = 0;
 const allowedOrigins = new Set(__ROUTE_INSPECTOR_ALLOWED_ORIGINS__);
 let state: InspectorState;
 let feedbackKey: TranslationKey | null = null;
 let feedbackTimer: number | null = null;
 
+function pageDisconnected(): boolean {
+  return pageConnection === 'needs_refresh' || pageConnection === 'site_access_blocked';
+}
+
 function footerState(turnExists: boolean): { key: TranslationKey; tone: string } {
   if (!state.settings.autoCaptureEnabled) return { key: 'status.paused', tone: 'idle' };
+  if (pageDisconnected()) return { key: 'status.pageDisconnected', tone: 'amber' };
   if (state.settings.captureMode === 'live') return { key: 'status.liveListening', tone: 'signal' };
   return turnExists
     ? { key: 'status.reloadCaptured', tone: 'signal' }
@@ -92,8 +102,17 @@ function render(next: InspectorState): void {
   if (captureStatus) {
     captureStatus.textContent = !state.settings.autoCaptureEnabled
       ? t(language, 'status.paused')
+      : pageDisconnected()
+      ? t(language, 'status.pageDisconnected')
       : t(language, mode === 'live' ? 'status.liveListening' : turn ? 'status.reloadCaptured' : 'status.waitingReload');
-    captureStatus.className = `signal-pill ${state.settings.autoCaptureEnabled ? 'live' : ''}`;
+    captureStatus.className = `signal-pill ${state.settings.autoCaptureEnabled && !pageDisconnected() ? 'live' : ''}`;
+  }
+  if (pageNotice && pageNoticeText) {
+    pageNotice.hidden = !pageDisconnected();
+    if (pageConnection === 'needs_refresh') pageNoticeText.textContent = t(language, 'page.refreshNotice');
+    if (pageConnection === 'site_access_blocked') {
+      pageNoticeText.textContent = t(language, 'page.siteAccessNotice', { site: activeTab?.url ? new URL(activeTab.url).hostname : '' });
+    }
   }
   if (hero) {
     const tone = verdictTone(turn?.verdict ?? 'unknown');
@@ -109,6 +128,24 @@ function render(next: InspectorState): void {
   if (metrics) metrics.innerHTML = `<div class="metric"><span class="metric-label">${escapeHtml(t(language, 'field.mode'))}</span><span class="metric-value">${escapeHtml(captureModeLabel(mode, language))}</span></div><div class="metric"><span class="metric-label">${escapeHtml(t(language, 'field.duration'))}</span><span class="metric-value">${escapeHtml(formatDuration(turn?.durationMs ?? null))}</span></div><div class="metric"><span class="metric-label">${escapeHtml(t(language, 'field.adapter'))}</span><span class="metric-value">${escapeHtml(turn?.sources.join('+') ?? '—')}</span></div>`;
   if (hero && turn?.taskKind === 'deep_research') hero.insertAdjacentHTML('beforeend',
     `<div class="route-source-line"><span>${escapeHtml(t(language, 'field.planningModel'))}</span><code>${escapeHtml(turn.routeModel ?? '—')}</code></div><div class="route-source-line"><span>${escapeHtml(t(language, 'field.reportModel'))}</span><code>${escapeHtml(turn.researchReportModel ?? '—')}</code></div>`);
+}
+
+async function probePageConnection(): Promise<void> {
+  const probe = ++connectionProbe;
+  const tab = activeTab;
+  // An optimistic probe yields "connected" only for a supported, fully loaded tab worth asking.
+  let next = classifyPageConnection(tab, allowedOrigins, { hostAccess: true, bridgeReachable: true });
+  if (next === 'connected' && tab?.id !== undefined) {
+    const [hostAccess, bridgeReachable] = await Promise.all([
+      chrome.permissions.contains({ origins: [`${new URL(tab.url!).origin}/*`] }).catch(() => true),
+      chrome.tabs.sendMessage<BridgePingRequest, { ok?: boolean } | undefined>(tab.id, { type: 'route:bridge-ping' })
+        .then((response) => response?.ok === true, () => false)
+    ]);
+    next = classifyPageConnection(tab, allowedOrigins, { hostAccess, bridgeReachable });
+  }
+  if (probe !== connectionProbe) return;
+  pageConnection = next;
+  if (state) render(state);
 }
 
 async function setLanguage(uiLanguage: UiLanguage): Promise<void> {
@@ -147,6 +184,11 @@ document.querySelectorAll<HTMLButtonElement>('[data-overlay]').forEach((button) 
 }));
 document.querySelector('#dashboard')?.addEventListener('click', () => void send({ type: 'route:open-dashboard' }));
 document.querySelector('#options')?.addEventListener('click', () => void chrome.runtime.openOptionsPage());
+document.querySelector('#page-refresh')?.addEventListener('click', async () => {
+  if (activeTab?.id === undefined) return;
+  await chrome.tabs.reload(activeTab.id);
+  window.close();
+});
 document.querySelector('#copy')?.addEventListener('click', async () => {
   const turn = latestForTab(state, displayTabId(state, activeTab, allowedOrigins), state.settings.captureMode);
   if (!turn) return showFeedback('status.noRecord', 'amber');
@@ -162,7 +204,9 @@ void (async () => {
     if (tabId !== activeTab?.id) return;
     activeTab = tab;
     if (state) render(state);
+    void probePageConnection();
   });
+  void probePageConnection();
   subscribe(render);
   render(await getState(activeTab?.id));
 })();

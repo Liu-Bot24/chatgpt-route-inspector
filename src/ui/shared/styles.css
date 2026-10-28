@@ -120,6 +120,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .button.amber { color:var(--amber); border-color:rgba(240,179,91,.62); }
 .button.danger { color:var(--danger); border-color:rgba(242,115,99,.5); }
 .button.quiet { color:var(--muted); border-color:var(--line); }
+.page-notice { display:flex; align-items:center; gap:12px; margin:0 0 8px; padding:8px 10px; border-left:2px solid var(--amber); background:rgba(240,179,91,.08); }
+.page-notice[hidden] { display:none; }
+.page-notice p { flex:1 1 auto; margin:0; color:var(--text); font-size:12px; line-height:1.45; }
+.popup-shell .page-notice .button { flex:0 0 auto; padding:7px 12px; font-size:12px; }
+.onboarding-refresh-note { display:block; max-width:720px; margin:18px 0 0; color:var(--text); }
 .privacy-note { margin-top:9px; padding:7px 10px; border-left:2px solid var(--amber); color:var(--muted); background:rgba(240,179,91,.055); font-size:10px; line-height:1.4; }
 .pow-readout { display:flex; align-items:center; gap:10px; min-width:0; margin:auto 0; padding:10px 12px; border-left:2px solid var(--amber); background:rgba(240,179,91,.055); white-space:nowrap; }
 .pow-readout strong { color:var(--text); font:700 10px var(--mono); }

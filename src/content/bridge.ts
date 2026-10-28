@@ -523,9 +523,13 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   }).catch(() => undefined).finally(() => { waitingObservations--; });
 });
 
-chrome.runtime.onMessage.addListener((message: unknown) => {
+chrome.runtime.onMessage.addListener((message: unknown, _sender: unknown, sendResponse?: (response: RuntimeResponse) => void) => {
   if (!message || typeof message !== 'object') return;
   const record = message as Record<string, unknown>;
+  if (record.type === 'route:bridge-ping') {
+    sendResponse?.({ ok: true });
+    return;
+  }
   if (record.type !== 'route:state-changed' || !record.state) return;
   const next = record.state as InspectorState;
   acceptState(next);

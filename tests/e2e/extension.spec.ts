@@ -1948,3 +1948,52 @@ test('rejects stale UI snapshots, keeps overlay nodes stable, and blocks post-cl
   expect(errors).toEqual([]);
   await Promise.all([options.close(), popup.close(), dashboard.close(), page.close()]);
 });
+
+
+test('asks to reload a ChatGPT tab that was open before installation', async () => {
+  // Install after the page is open through CDP, the state a user is in right after installing from the store.
+  const installProfile = await mkdtemp(path.join(tmpdir(), 'route-inspector-install-'));
+  const installContext = await chromium.launchPersistentContext(installProfile, {
+    executablePath: await findExtensionCapableChromium(),
+    headless: true,
+    args: ['--enable-unsafe-extension-debugging'],
+    ignoreDefaultArgs: ['--disable-extensions']
+  });
+  try {
+    const page = await installContext.newPage();
+    await page.goto('http://127.0.0.1:43996/c/e2e-conversation');
+    const cdp = await installContext.browser()!.newBrowserCDPSession();
+    const { id } = await cdp.send('Extensions.loadUnpacked' as never, { path: extensionPath } as never) as { id: string };
+    await expect.poll(() => installContext.pages().find((candidate) => candidate.url().endsWith('/ui/onboarding/index.html'))?.locator('.onboarding-refresh-note').textContent())
+      .toMatch(/安装前已经打开的 ChatGPT 页面需要刷新一次|open before installation need to be reloaded once/);
+    // A real action popup reads the underlying active tab, so foreground the fixture before loading it.
+    const openPopup = async () => {
+      const popup = await installContext.newPage();
+      await popup.setViewportSize({ width: 640, height: 600 });
+      await popup.goto(`chrome-extension://${id}/ui/popup/index.html`);
+      await page.bringToFront();
+      await popup.reload();
+      return popup;
+    };
+
+    const stale = await openPopup();
+    await expect(page.locator('#chatgpt-route-inspector-root')).toHaveCount(0);
+    await expect(stale.locator('#page-notice')).toBeVisible();
+    await expect(stale.locator('#page-notice-text')).toHaveText(/刷新一次后才能开始捕获|Reload it once to start capturing/);
+    await expect(stale.locator('#capture-status')).toHaveText(/页面未连接|Page not connected/);
+    await expect(stale.locator('#footer-status')).toHaveText(/页面未连接|Page not connected/);
+    await stale.locator('[data-language="zh"]').click();
+    await expect(stale.locator('#page-notice-text')).toHaveText('此 ChatGPT 页面在安装或更新扩展之前就已打开，刷新一次后才能开始捕获。');
+    await expectPopupFits(stale);
+    await stale.screenshot({ path: path.join(root, 'output', 'playwright', 'popup-reload-needed.png'), fullPage: true });
+    await Promise.all([page.waitForEvent('load'), stale.locator('#page-refresh').click()]);
+
+    const reconnected = await openPopup();
+    await expect(page.locator('#chatgpt-route-inspector-root')).toHaveCount(1);
+    await expect(reconnected.locator('#page-notice')).toBeHidden();
+    await expect(reconnected.locator('#capture-status')).toHaveText('实时监听');
+  } finally {
+    await installContext.close();
+    await rm(installProfile, { recursive: true, force: true });
+  }
+});

@@ -8,6 +8,20 @@ export function supportedPageUrl(value: string | undefined, origins: ReadonlySet
   } catch { return null; }
 }
 
+export type PageConnection = 'unsupported' | 'loading' | 'connected' | 'needs_refresh' | 'site_access_blocked';
+
+/**
+ * Content scripts run only in documents loaded after install, update, or a granted site access.
+ * A supported tab whose bridge cannot answer must be reloaded before capture can start.
+ */
+export function classifyPageConnection(tab: { url?: string | undefined; pendingUrl?: string | undefined; status?: string | undefined } | undefined,
+  origins: ReadonlySet<string>, probe: { hostAccess: boolean; bridgeReachable: boolean }): PageConnection {
+  if (!supportedPageUrl(tab?.url, origins)) return 'unsupported';
+  if (tab?.pendingUrl || tab?.status !== 'complete') return 'loading';
+  if (probe.bridgeReachable) return 'connected';
+  return probe.hostAccess ? 'needs_refresh' : 'site_access_blocked';
+}
+
 /** A tab ID alone does not prove that its stored visit is still on screen. */
 export function displayTabId(state: InspectorState, tab: { id?: number | undefined; url?: string | undefined; pendingUrl?: string | undefined } | undefined,
   origins: ReadonlySet<string>): number | undefined {
