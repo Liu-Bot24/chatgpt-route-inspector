@@ -44,7 +44,7 @@ let feedbackKey: TranslationKey | null = null;
 let feedbackTimer: number | null = null;
 
 function pageDisconnected(): boolean {
-  return pageConnection === 'needs_refresh' || pageConnection === 'site_access_blocked';
+  return pageConnection === 'needs_refresh';
 }
 
 function footerState(turnExists: boolean): { key: TranslationKey; tone: string } {
@@ -110,9 +110,6 @@ function render(next: InspectorState): void {
   if (pageNotice && pageNoticeText) {
     pageNotice.hidden = !pageDisconnected();
     if (pageConnection === 'needs_refresh') pageNoticeText.textContent = t(language, 'page.refreshNotice');
-    if (pageConnection === 'site_access_blocked') {
-      pageNoticeText.textContent = t(language, 'page.siteAccessNotice', { site: activeTab?.url ? new URL(activeTab.url).hostname : '' });
-    }
   }
   if (hero) {
     const tone = verdictTone(turn?.verdict ?? 'unknown');
@@ -134,14 +131,11 @@ async function probePageConnection(): Promise<void> {
   const probe = ++connectionProbe;
   const tab = activeTab;
   // An optimistic probe yields "connected" only for a supported, fully loaded tab worth asking.
-  let next = classifyPageConnection(tab, allowedOrigins, { hostAccess: true, bridgeReachable: true });
+  let next = classifyPageConnection(tab, allowedOrigins, { bridgeReachable: true });
   if (next === 'connected' && tab?.id !== undefined) {
-    const [hostAccess, bridgeReachable] = await Promise.all([
-      chrome.permissions.contains({ origins: [`${new URL(tab.url!).origin}/*`] }).catch(() => true),
-      chrome.tabs.sendMessage<BridgePingRequest, { ok?: boolean } | undefined>(tab.id, { type: 'route:bridge-ping' })
-        .then((response) => response?.ok === true, () => false)
-    ]);
-    next = classifyPageConnection(tab, allowedOrigins, { hostAccess, bridgeReachable });
+    const bridgeReachable = await chrome.tabs.sendMessage<BridgePingRequest, { ok?: boolean } | undefined>(tab.id, { type: 'route:bridge-ping' })
+      .then((response) => response?.ok === true, () => false);
+    next = classifyPageConnection(tab, allowedOrigins, { bridgeReachable });
   }
   if (probe !== connectionProbe) return;
   pageConnection = next;

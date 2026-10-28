@@ -8,18 +8,19 @@ export function supportedPageUrl(value: string | undefined, origins: ReadonlySet
   } catch { return null; }
 }
 
-export type PageConnection = 'unsupported' | 'loading' | 'connected' | 'needs_refresh' | 'site_access_blocked';
+export type PageConnection = 'unsupported' | 'loading' | 'connected' | 'needs_refresh';
 
 /**
  * Content scripts run only in documents loaded after install, update, or a granted site access.
- * A supported tab whose bridge cannot answer must be reloaded before capture can start.
+ * An unreachable bridge does not prove that site access is blocked: on-click
+ * access can be temporary and absent from permissions.contains().
  */
 export function classifyPageConnection(tab: { url?: string | undefined; pendingUrl?: string | undefined; status?: string | undefined } | undefined,
-  origins: ReadonlySet<string>, probe: { hostAccess: boolean; bridgeReachable: boolean }): PageConnection {
+  origins: ReadonlySet<string>, probe: { bridgeReachable: boolean }): PageConnection {
   if (!supportedPageUrl(tab?.url, origins)) return 'unsupported';
   if (tab?.pendingUrl || tab?.status !== 'complete') return 'loading';
   if (probe.bridgeReachable) return 'connected';
-  return probe.hostAccess ? 'needs_refresh' : 'site_access_blocked';
+  return 'needs_refresh';
 }
 
 /** A tab ID alone does not prove that its stored visit is still on screen. */

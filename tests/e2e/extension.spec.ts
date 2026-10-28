@@ -1979,11 +1979,11 @@ test('asks to reload a ChatGPT tab that was open before installation', async () 
     const stale = await openPopup();
     await expect(page.locator('#chatgpt-route-inspector-root')).toHaveCount(0);
     await expect(stale.locator('#page-notice')).toBeVisible();
-    await expect(stale.locator('#page-notice-text')).toHaveText(/刷新一次后才能开始捕获|Reload it once to start capturing/);
+    await expect(stale.locator('#page-notice-text')).toHaveText(/尚未连接扩展|not connected yet/);
     await expect(stale.locator('#capture-status')).toHaveText(/页面未连接|Page not connected/);
     await expect(stale.locator('#footer-status')).toHaveText(/页面未连接|Page not connected/);
     await stale.locator('[data-language="zh"]').click();
-    await expect(stale.locator('#page-notice-text')).toHaveText('此 ChatGPT 页面在安装或更新扩展之前就已打开，刷新一次后才能开始捕获。');
+    await expect(stale.locator('#page-notice-text')).toHaveText('此页面尚未连接扩展。请先刷新；若仍无法捕获，再检查扩展的网站访问权限。');
     await expectPopupFits(stale);
     await stale.screenshot({ path: path.join(root, 'output', 'playwright', 'popup-reload-needed.png'), fullPage: true });
     await Promise.all([page.waitForEvent('load'), stale.locator('#page-refresh').click()]);
@@ -1995,5 +1995,98 @@ test('asks to reload a ChatGPT tab that was open before installation', async () 
   } finally {
     await installContext.close();
     await rm(installProfile, { recursive: true, force: true });
+  }
+});
+
+test('reloads an on-click page without mistaking temporary access for missing permission', async () => {
+  const permissionProfile = await mkdtemp(path.join(tmpdir(), 'route-inspector-permission-'));
+  const permissionContext = await chromium.launchPersistentContext(permissionProfile, {
+    executablePath: await findExtensionCapableChromium(),
+    headless: true,
+    args: ['--enable-unsafe-extension-debugging'],
+    ignoreDefaultArgs: ['--disable-extensions']
+  });
+  try {
+    await permissionContext.route('https://**/*', (route) => route.abort());
+    const page = await permissionContext.newPage();
+    await page.goto('http://127.0.0.1:43996/delta-fixture');
+    const cdp = await permissionContext.browser()!.newBrowserCDPSession();
+    const { id } = await cdp.send('Extensions.loadUnpacked' as never, { path: extensionPath } as never) as { id: string };
+    const permissionWorker = permissionContext.serviceWorkers().find((candidate) => candidate.url().startsWith(`chrome-extension://${id}/`))
+      ?? await permissionContext.waitForEvent('serviceworker');
+    await expect.poll(() => permissionContext.pages().find((candidate) => candidate.url().endsWith('/ui/onboarding/index.html'))).toBeTruthy();
+    await permissionContext.pages().find((candidate) => candidate.url().endsWith('/ui/onboarding/index.html'))!.close();
+
+    // Set the browser's real on-click state; do not mock Chrome permissions or the bridge.
+    const manager = await permissionContext.newPage();
+    await manager.goto(`chrome://extensions/?id=${id}`);
+    const automaticName = /自动允许访问以下网站|Automatically allow access/;
+    const automaticAccess = manager.getByRole('switch', { name: automaticName })
+      .or(manager.getByRole('button', { name: automaticName }));
+    await automaticAccess.waitFor();
+    if (await automaticAccess.getAttribute('aria-checked') === 'true' || await automaticAccess.getAttribute('aria-pressed') === 'true') {
+      await automaticAccess.click();
+    }
+    const siteAccess = manager.getByRole('switch', { name: 'http://127.0.0.1/*', exact: true })
+      .or(manager.getByRole('button', { name: 'http://127.0.0.1/*', exact: true }));
+    if (await siteAccess.getAttribute('aria-checked') === 'true' || await siteAccess.getAttribute('aria-pressed') === 'true') {
+      await siteAccess.click();
+    }
+    await manager.close();
+    await page.reload();
+    await page.bringToFront();
+    const hasPersistentAccess = () => permissionWorker.evaluate(() => chrome.permissions.contains({ origins: ['http://127.0.0.1/*'] }));
+    await expect.poll(hasPersistentAccess).toBe(false);
+    await expect(page.locator('#chatgpt-route-inspector-root')).toHaveCount(0);
+
+    const { targetInfos } = await cdp.send('Target.getTargets', { filter: [{ type: 'tab', exclude: false }] });
+    const target = targetInfos.find((candidate) => candidate.type === 'tab' && candidate.url === page.url());
+    expect(target).toBeTruthy();
+    await cdp.send('Extensions.triggerAction' as never, { id, targetId: target!.targetId } as never);
+    await expect.poll(() => permissionWorker.evaluate(async () => (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.url)).toBe(page.url());
+    await expect.poll(hasPersistentAccess).toBe(false);
+
+    // Native browser permission UI may intercept the action. Render the same popup
+    // document against the real active tab, as in the installation regression above.
+    const openPopup = async () => {
+      const popup = await permissionContext.newPage();
+      await popup.setViewportSize({ width: 640, height: 600 });
+      await popup.goto(`chrome-extension://${id}/ui/popup/index.html`);
+      await page.bringToFront();
+      await popup.reload();
+      return popup;
+    };
+    const stale = await openPopup();
+    await expect(stale.locator('#page-notice')).toBeVisible();
+    await expect(stale.locator('#page-notice-text')).toHaveText(/尚未连接扩展|not connected yet/);
+    await expect(stale.locator('#page-notice-text')).not.toContainText(/Chrome 未允许|Chrome has not allowed/);
+    await stale.locator('[data-language="en"]').click();
+    await expect(stale.locator('#page-notice-text')).toHaveText("This page is not connected yet. Reload it first. If capture still fails, check the extension's site access.");
+    await expectPopupFits(stale);
+    await stale.screenshot({ path: test.info().outputPath('temporary-access-before-refresh.png') });
+    await Promise.all([page.waitForEvent('load'), stale.locator('#page-refresh').click()]);
+
+    await expect(page.locator('#chatgpt-route-inspector-root')).toHaveCount(1);
+    const reconnected = await openPopup();
+    await expect(reconnected.locator('#page-notice')).toBeHidden();
+    await expect(reconnected.locator('#capture-status')).toHaveText('Live capture');
+    await expect.poll(hasPersistentAccess).toBe(false);
+    await page.evaluate(async () => {
+      const response = await fetch('/backend-api/f/conversation?delta=normal', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-6-pro', conversation_id: 'conv-normal' })
+      });
+      await response.text();
+    });
+    await expect(page.locator('#chatgpt-route-inspector-root .route .model b')).toHaveText(['gpt-6-pro', 'gpt-6-pro']);
+    await expect(reconnected.locator('.route-model strong')).toHaveText(['GPT 6 Pro', 'GPT 6 Pro']);
+    await expect(reconnected.locator('#metrics')).toContainText('page_fetch');
+    await reconnected.screenshot({ path: test.info().outputPath('temporary-access-captured.png') });
+  } finally {
+    await permissionContext.close();
+    const resolvedProfile = path.resolve(permissionProfile);
+    if (resolvedProfile.startsWith(`${path.resolve(tmpdir())}${path.sep}`) && path.basename(resolvedProfile).startsWith('route-inspector-permission-')) {
+      await rm(resolvedProfile, { recursive: true, force: true });
+    }
   }
 });

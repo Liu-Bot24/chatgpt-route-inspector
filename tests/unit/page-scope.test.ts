@@ -8,6 +8,12 @@ const state: InspectorState = { turns: [], powReadings: [], settings: DEFAULT_SE
   captureContexts: { 7: { id: 'a', documentId: 'doc', documentStartedAt: 1, revision: 0,
     pageUrl: 'https://chatgpt.com/c/a', reloadEligible: true } } };
 
+it('does not infer missing site access from an unreachable bridge', () => {
+  const tab = { url: 'https://chatgpt.com/c/a', status: 'complete' };
+  expect(classifyPageConnection(tab, origins, { bridgeReachable: false })).toBe('needs_refresh');
+  expect(classifyPageConnection(tab, origins, { bridgeReachable: true })).toBe('connected');
+});
+
 it('requires a supported URL and the matching non-retired visit for popup selection', () => {
   expect(displayTabId(state, { id: 7, url: 'https://chatgpt.com/c/a?x=1#answer' }, origins)).toBe(7);
   for (const url of [undefined, 'https://example.org/', 'https://chatgpt.com/c/b', 'chrome://settings', 'bad-url']) {
@@ -27,14 +33,13 @@ it('requires a supported URL and the matching non-retired visit for popup select
 
 it('asks for a reload only when a loaded supported tab has no reachable bridge', () => {
   const tab = { url: 'https://chatgpt.com/c/a', status: 'complete' };
-  const reachable = { hostAccess: true, bridgeReachable: true };
+  const reachable = { bridgeReachable: true };
   expect(classifyPageConnection(tab, origins, reachable)).toBe('connected');
-  expect(classifyPageConnection(tab, origins, { hostAccess: true, bridgeReachable: false })).toBe('needs_refresh');
-  expect(classifyPageConnection(tab, origins, { hostAccess: false, bridgeReachable: false })).toBe('site_access_blocked');
+  expect(classifyPageConnection(tab, origins, { bridgeReachable: false })).toBe('needs_refresh');
   for (const url of [undefined, 'https://example.org/', 'chrome-extension://id/ui/popup/index.html']) {
-    expect(classifyPageConnection({ url, status: 'complete' }, origins, { hostAccess: true, bridgeReachable: false })).toBe('unsupported');
+    expect(classifyPageConnection({ url, status: 'complete' }, origins, { bridgeReachable: false })).toBe('unsupported');
   }
   expect(classifyPageConnection(undefined, origins, reachable)).toBe('unsupported');
-  expect(classifyPageConnection({ ...tab, status: 'loading' }, origins, { hostAccess: true, bridgeReachable: false })).toBe('loading');
-  expect(classifyPageConnection({ ...tab, pendingUrl: 'https://chatgpt.com/c/b' }, origins, { hostAccess: true, bridgeReachable: false })).toBe('loading');
+  expect(classifyPageConnection({ ...tab, status: 'loading' }, origins, { bridgeReachable: false })).toBe('loading');
+  expect(classifyPageConnection({ ...tab, pendingUrl: 'https://chatgpt.com/c/b' }, origins, { bridgeReachable: false })).toBe('loading');
 });
