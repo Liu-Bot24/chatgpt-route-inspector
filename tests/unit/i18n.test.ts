@@ -15,33 +15,6 @@ const mismatch = createTurn({
 });
 
 describe('UI translations', () => {
-  it('provides complete Chinese and English copy for the upgrade announcement', () => {
-    const html = readFileSync(new URL('../../src/ui/announcement/index.html', import.meta.url), 'utf8');
-    const keys = [...html.matchAll(/data-i18n(?:-aria-label|-title)?="([^"]+)"/g)].map((match) => match[1]!);
-    expect(keys.length).toBeGreaterThan(10);
-    for (const key of keys) {
-      expect(TRANSLATION_KEYS).toContain(key);
-      const translatedKey = key as (typeof TRANSLATION_KEYS)[number];
-      expect(t('zh', translatedKey)).not.toBe(key);
-      expect(t('en', translatedKey)).not.toBe(key);
-      expect(t('en', translatedKey)).not.toMatch(/[\u4e00-\u9fff]/);
-    }
-    expect(t('zh', 'notice.badge')).toBe('版本公告');
-    expect(t('zh', 'notice.pollBefore')).toBe('根据此前');
-    expect(t('zh', 'notice.subtitle')).toBe('1.0.9 · 版本公告');
-    expect(t('zh', 'notice.release109')).toContain('新建会话');
-    expect(t('zh', 'notice.pollLink')).toBe('投票');
-    expect(t('zh', 'notice.pollResult')).toContain('约 80% 未降级');
-    expect(t('zh', 'notice.pollResult')).toContain('约 80% 发生了降级');
-    expect(t('en', 'notice.pollResult')).toContain('about 80% reported no downgrade');
-    expect(t('zh', 'notice.suspectAfter')).toContain('疑似降级');
-    expect(t('zh', 'notice.suspectEnding')).toBe('提醒。');
-    expect(t('zh', 'notice.imageLead')).toBe('单纯');
-    expect(t('zh', 'notice.imageAfter')).toContain('请自行辨别');
-    expect(t('zh', 'notice.release108')).toBe('新增“疑似降级”标记。');
-    expect(t('zh', 'notice.scopeCopy')).toContain('Codex');
-  });
-
   it('renders auto reasoning as its own bilingual status and reason', () => {
     for (const model of ['gpt-5-6-auto-thinking', 'gpt-5-5-auto-thinking']) {
       const automatic = createTurn({

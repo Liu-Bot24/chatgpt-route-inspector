@@ -4,33 +4,35 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <title data-i18n="notice.documentTitle">Route Inspector · 1.0.9 版本公告</title>
-  <link rel="stylesheet" href="../shared/styles.css">
+  <title data-i18n="notice.documentTitle">Route Inspector · 1.1.0 版本公告</title>
+  <link rel="stylesheet" href="/ui/shared/styles.css">
 </head>
 <body>
   <main class="announcement">
     <header class="masthead announcement-masthead">
-      <div class="brand"><span class="brand-mark" aria-hidden="true"></span><div class="brand-copy"><div class="brand-title-line"><h1>Route Inspector</h1></div><p data-i18n="notice.subtitle">1.0.9 · 版本公告</p></div></div>
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span><div class="brand-copy"><div class="brand-title-line"><h1>Route Inspector</h1></div><p data-i18n="notice.subtitle">1.1.0 · 版本公告</p></div></div>
       <div class="language-switch" role="group" aria-label="切换语言" data-i18n-aria-label="language.label"><button type="button" data-language="en" aria-pressed="false">EN</button><button type="button" data-language="zh" aria-pressed="true">中</button></div>
     </header>
     <article class="announcement-body" aria-label="版本公告" data-i18n-aria-label="notice.badge">
       <span class="tag auto" data-i18n="notice.badge">版本公告</span>
-      <ol class="announcement-points">
-        <li>
-          <p><span data-i18n="notice.pollBefore">根据此前</span><a id="notice-poll" href="https://x.com/liu_9982/status/2100132495455043829?s=20" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" data-i18n="notice.pollLink">投票</a><span data-i18n="notice.pollAfter">反馈，响应结果中存在 </span><code>resolved_model_slug</code><span data-i18n="notice.pollResult"> 字段的用户约 80% 未降级；没有该字段的用户约 80% 发生了降级。</span></p>
-          <p><span data-i18n="notice.suspectBefore">故针对响应结果中 </span><code>resolved_model_slug</code><span data-i18n="notice.suspectAfter"> 字段缺失的情况，新增“疑似降级”标记</span><span class="announcement-note-anchor"><span data-i18n="notice.suspectEnding">提醒。</span><sup class="announcement-note-ref">*</sup></span></p>
-        </li>
-        <li><p data-i18n="notice.scopeCopy">本扩展的正确应用范围是网页版 Chat 模式。网页版 Work 模式的降级情况与 Codex 一致，请按照 Codex 排查。</p></li>
-      </ol>
-      <p class="announcement-footnote"><span class="announcement-note-anchor"><span class="announcement-note-ref">*</span>&nbsp;<span data-i18n="notice.imageLead">单纯</span></span><span data-i18n="notice.imageBefore">图片生成任务响应结果中不带 </span><code>resolved_model_slug</code><span data-i18n="notice.imageAfter"> 字段属正常现象，请自行辨别。</span></p>
+      <ul class="announcement-points">
+        <li><p data-i18n="notice.update110Tasks">新增“图片生成”和“深度研究”状态，避免将这两类任务误判为降级或路由错配。</p></li>
+        <li><p data-i18n="notice.update110Models">深度研究支持分别记录和显示规划模型、报告模型。</p></li>
+        <li><p data-i18n="notice.update110Capture">实时请求与会话重载均支持识别图片生成和深度研究，并接收同一任务的后续结果。</p></li>
+        <li><p><span data-i18n="notice.update110AutoBefore">适配免费账号请求模型为 </span><code>Auto</code><span data-i18n="notice.update110AutoAfter"> 的情况，统一显示为“自动推理”。</span></p></li>
+      </ul>
       <div class="announcement-actions">
         <button id="notice-close" class="button" type="button" data-i18n="notice.close">关闭公告</button>
       </div>
       <section class="announcement-history" aria-labelledby="notice-history-title">
-        <h3 id="notice-history-title" data-i18n="notice.historyTitle">历代更新日志</h3>
+        <div class="announcement-history-heading">
+          <h3 id="notice-history-title" data-i18n="notice.historyTitle">历代更新日志</h3>
+          <a class="announcement-comment" href="https://x.com/liu_9982/status/2103986931227123784" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer"><img src="/icons/x-logo.svg" width="32" height="32" alt="X"><span data-i18n="notice.comment">留言</span></a>
+        </div>
         <ol class="announcement-releases">
+          <li><span class="release-version">v1.1.0</span><p data-i18n="notice.release110">新增图片生成、深度研究识别，支持显示规划与报告模型；适配免费账号 Auto 请求。</p></li>
           <li><span class="release-version">v1.0.9</span><p data-i18n="notice.release109">修复新建会话时实时请求模型与响应路由无法显示的问题；扩展连接失效时提示刷新页面，避免浮窗按钮无响应。</p></li>
-          <li><span class="release-version">v1.0.8</span><p data-i18n="notice.release108">新增“疑似降级”标记。</p></li>
+          <li><span class="release-version">v1.0.8</span><p><span data-i18n="notice.pollBefore">根据此前</span><a id="notice-poll" href="https://x.com/liu_9982/status/2100132495455043829?s=20" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" data-i18n="notice.pollLink">投票</a><span data-i18n="notice.release108After">反馈，新增“疑似降级”标记。</span></p></li>
           <li><a class="release-version" href="https://github.com/Liu-Bot24/chatgpt-route-inspector/releases/tag/v1.0.7" target="_blank" rel="noopener noreferrer">v1.0.7</a><p data-i18n="notice.release107">实时请求与会话重载同时独立采集，切换标签即可查看；优化浮窗排版。</p></li>
           <li><a class="release-version" href="https://github.com/Liu-Bot24/chatgpt-route-inspector/releases/tag/v1.0.6" target="_blank" rel="noopener noreferrer">v1.0.6</a><p data-i18n="notice.release106">适配增量流、多行 SSE 与 WebSocket；修复请求配对与记录隔离；新增额度快照和 5.6/5.5 自动推理状态。</p></li>
           <li><a class="release-version" href="https://github.com/Liu-Bot24/chatgpt-route-inspector/releases/tag/v1.0.5" target="_blank" rel="noopener noreferrer">v1.0.5</a><p data-i18n="notice.release105">修复 ChatGPT 页面重建后浮窗消失的问题，并保留手动隐藏设置。</p></li>
@@ -42,6 +44,6 @@
       </section>
     </article>
   </main>
-  <script src="index.js"></script>
+  <script src="/notice.js"></script>
 </body>
 </html>

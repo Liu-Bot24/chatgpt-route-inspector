@@ -149,6 +149,8 @@ The extension does not request the `debugger` permission and does not monitor un
 
 ## Development
 
+Announcement links open the [public notice website](https://rinotice.liu-qi.cn/). The extension does not bundle the notice page or release-history text. The website source lives in `site/notice`; `npm run build:notice` builds it independently into `dist/notice`.
+
 ```powershell
 npm run typecheck
 npm run lint

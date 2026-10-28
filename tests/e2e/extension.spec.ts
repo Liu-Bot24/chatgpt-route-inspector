@@ -185,6 +185,10 @@ test.afterAll(async () => {
 });
 
 test('links the dashboard version to its notice and keeps GitHub separate', async () => {
+  expect(existsSync(path.join(extensionPath, 'ui/announcement'))).toBe(false);
+  for (const entry of ['ui/popup/index.js', 'content/bridge.js']) {
+    expect(await readFile(path.join(extensionPath, entry), 'utf8')).not.toContain('notice.documentTitle');
+  }
   const dashboard = await context.newPage();
   await dashboard.goto(`chrome-extension://${extensionId}/ui/dashboard/index.html`);
   const version = await dashboard.evaluate(() => chrome.runtime.getManifest().version);
@@ -211,7 +215,7 @@ test('links the dashboard version to its notice and keeps GitHub separate', asyn
   await notice.waitForURL('https://rinotice.liu-qi.cn/');
   await notice.getByRole('button', { name: '中', exact: true }).click();
   await expect(notice.locator('[data-i18n="notice.badge"]')).toHaveText('版本公告');
-  await notice.close();
+  await Promise.all([notice.waitForEvent('close'), notice.getByRole('button', { name: '关闭公告', exact: true }).click()]);
   await dashboard.evaluate(async () => chrome.runtime.sendMessage({ type: 'route:update-settings', settings: { uiLanguage: 'en' } }));
   await expect(dashboard.locator('html')).toHaveAttribute('lang', 'en');
   await dashboard.setViewportSize({ width: 375, height: 700 });
@@ -305,30 +309,24 @@ test('anchors the yellow suspected-downgrade hint to the status in live and relo
   await notice.getByRole('button', { name: '中', exact: true }).click();
   await expect(notice.locator('#notice-title')).toHaveCount(0);
   await expect(notice.locator('.announcement-body > .tag')).toHaveText('版本公告');
-  await expect(notice.locator('.announcement-points > li')).toHaveCount(2);
-  await expect(notice.locator('.announcement-points > li').first()).toContainText('约 80% 未降级');
+  await expect(notice.locator('.announcement-points > li')).toHaveCount(4);
+  await expect(notice.locator('.announcement-points > li').first()).toContainText('新增“图片生成”和“深度研究”状态');
   await expect(notice.locator('#notice-poll')).toHaveText('投票');
   await expect(notice.locator('#notice-poll')).toHaveAttribute('href', 'https://x.com/liu_9982/status/2100132495455043829?s=20');
-  await expect(notice.locator('.announcement-points sup')).toHaveText('*');
   await notice.setViewportSize({ width: 1100, height: 800 });
-  await expect(notice.locator('.announcement-points .announcement-note-anchor')).toHaveCSS('white-space', 'nowrap');
-  await expect(notice.locator('.announcement-points .announcement-note-anchor')).toHaveText('提醒。*');
-  await expect(notice.locator('.announcement-footnote')).toContainText('单纯图片生成任务响应结果中不带 resolved_model_slug 字段属正常现象，请自行辨别。');
-  await expect(notice.locator('.announcement-releases li').first()).toContainText('修复新建会话');
-  await expect(notice.locator('.announcement-releases li').nth(1)).toContainText('新增“疑似降级”标记。');
+  await expect(notice.locator('.announcement-footnote')).toHaveCount(0);
+  await expect(notice.locator('.announcement-releases li').first()).toContainText('新增图片生成、深度研究识别');
+  await expect(notice.locator('.announcement-releases li').nth(2)).toContainText('新增“疑似降级”标记。');
   await expect(notice.locator('#notice-history-title')).toHaveCSS('color', 'rgb(178, 244, 91)');
-  await notice.screenshot({ path: path.join(root, 'output/playwright/announcement-108-zh.png'), fullPage: true });
+  await notice.screenshot({ path: path.join(root, 'output/playwright/public-notice-zh.png'), fullPage: true });
   await notice.getByRole('button', { name: 'EN', exact: true }).click();
   await expect(notice.locator('.announcement-body > .tag')).toHaveText('Version notice');
-  await expect(notice.locator('.announcement-points > li').first()).toContainText('about 80% reported no downgrade');
+  await expect(notice.locator('.announcement-points > li').first()).toContainText('Image generation');
   await expect(notice.locator('#notice-poll')).toHaveText('poll');
-  await expect(notice.locator('.announcement-footnote')).toContainText('For image-only generation tasks');
-  await expect(notice.locator('.announcement-releases li')).toHaveCount(9);
-  await expect(notice.locator('.announcement-points > li').nth(1)).toContainText('Work mode');
-  await notice.screenshot({ path: path.join(root, 'output/playwright/announcement-108-en.png'), fullPage: true });
+  await expect(notice.locator('.announcement-releases li')).toHaveCount(10);
+  await expect(notice.locator('.announcement-points > li').nth(1)).toContainText('planning model and report model');
+  await notice.screenshot({ path: path.join(root, 'output/playwright/public-notice-en.png'), fullPage: true });
   await notice.setViewportSize({ width: 375, height: 800 });
-  await expect(notice.locator('.announcement-points .announcement-note-anchor')).toHaveCSS('white-space', 'nowrap');
-  await expect(notice.locator('.announcement-points .announcement-note-anchor')).toHaveText('added.*');
   expect(await notice.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await notice.close();
   await trigger.focus();

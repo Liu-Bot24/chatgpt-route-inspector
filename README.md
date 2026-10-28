@@ -149,6 +149,8 @@ npm run build
 
 ## 开发
 
+扩展的公告入口统一打开[线上版本公告](https://rinotice.liu-qi.cn/)，扩展包不包含公告页面或更新日志正文。线上网站的维护源码位于 `site/notice`，运行 `npm run build:notice` 可独立生成 `dist/notice`。
+
 ```powershell
 npm run typecheck
 npm run lint
